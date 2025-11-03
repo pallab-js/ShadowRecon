@@ -307,17 +307,3 @@ See [EXAMPLES.md](EXAMPLES.md) for detailed usage examples and common scenarios.
 ## Support
 
 For issues, feature requests, or security concerns, please open an issue on [GitHub](https://github.com/pallab-js/ShadowRecon/issues).
-
-## Status
-
-**Current Version**: 0.1.0
-
-### Implementation Status
-
-- ? **Core Scanning**: Fully implemented (TCP Connect, SYN, UDP, and advanced scans)
-- ? **Service Detection**: Basic and advanced modes fully functional
-- ? **Output Formats**: All formats (Text, JSON, XML, CSV, HTML, Grep) working
-- ? **Network Discovery**: CIDR, IP ranges, hostname resolution working
-- ?? **OS Fingerprinting**: Experimental/heuristic-based (stub implementation)
-- ?? **Advanced Scripts**: Some scripts are placeholders (marked in code)
-- ? **Vulnerability Scripts**: Core scripts (Heartbleed, HTTP, SMB, SSH, Redis) implemented
