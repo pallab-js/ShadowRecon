@@ -1,5 +1,9 @@
 # ShadowRecon
 
+[![CI](https://github.com/pallab-js/ShadowRecon/actions/workflows/ci.yml/badge.svg)](https://github.com/pallab-js/ShadowRecon/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange)](https://www.rust-lang.org/)
+
 ShadowRecon is a powerful, modern network discovery and port/service scanning tool built in Rust. Designed as a more advanced and flexible alternative to traditional tools like nmap.
 
 ## Features
@@ -227,8 +231,20 @@ sudo shadowrecon 192.168.1.1 -s S -p top-1000
 shadowrecon target.com --script-scan -p 443,80,22
 
 # Run specific vulnerability checks
-shadowrecon target.com --script heartbleed,http-vulns -p 443,80
+shadowrecon target.com --script heartbleed,http-vulns,ftp-anon,dns-amplification,ntp-monlist -p 443,80,22,21,53,123
 ```
+
+#### Available Vulnerability Scripts
+- `heartbleed`: Checks for OpenSSL Heartbleed vulnerability (CVE-2014-0160)
+- `smb-vulns`: Checks for common SMB vulnerabilities
+- `http-vulns`: Checks for common HTTP vulnerabilities and missing security headers
+- `ftp-anon`: Checks if FTP server allows anonymous access
+- `dns-amplification`: Checks if DNS server can be used for amplification attacks
+- `ntp-monlist`: Checks for NTP monlist command vulnerability (CVE-2013-5211)
+- `ssh-weak`: Checks for weak SSH cryptographic algorithms
+- `redis-unauth`: Checks for Redis unauthorized access
+- `mongodb-unauth`: Checks for MongoDB unauthorized access
+- `elasticsearch-unauth`: Checks for Elasticsearch unauthorized access
 
 ## Architecture
 
@@ -289,6 +305,10 @@ cargo test
 # Run with debug logging
 RUST_LOG=shadowrecon=debug cargo run -- <args>
 ```
+
+## Code of Conduct
+
+This project follows a code of conduct to ensure a welcoming environment for all contributors. See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for details.
 
 ## License
 

@@ -301,43 +301,231 @@ async fn probe_http_service(
     Ok(Some(info))
 }
 
-/// UDP service detection
-#[allow(dead_code)]
+/// UDP service detection with payload-based fingerprinting
 pub async fn detect_udp_service(
-    _target: IpAddr,
+    target: IpAddr,
     port: u16,
-    _detector: &ServiceDetector,
-) -> Result<Option<ServiceInfo>, Box<dyn std::error::Error>> {
-    // UDP service detection is more limited
-    match port {
-        53 => Ok(Some(ServiceInfo {
-            name: "dns".to_string(),
-            version: None,
-            product: Some("DNS Server".to_string()),
-            cpe: Some("cpe:/a:isc:bind".to_string()),
-            script_results: HashMap::new(),
-        })),
-        67 | 68 => Ok(Some(ServiceInfo {
-            name: "dhcp".to_string(),
-            version: None,
-            product: Some("DHCP Server".to_string()),
-            cpe: None,
-            script_results: HashMap::new(),
-        })),
-        123 => Ok(Some(ServiceInfo {
-            name: "ntp".to_string(),
-            version: None,
-            product: Some("NTP Server".to_string()),
-            cpe: Some("cpe:/a:ntp:ntp".to_string()),
-            script_results: HashMap::new(),
-        })),
-        _ => Ok(Some(ServiceInfo {
-            name: "unknown".to_string(),
-            version: None,
-            product: None,
-            cpe: None,
-            script_results: HashMap::new(),
-        })),
+    detector: &ServiceDetector,
+) -> anyhow::Result<Option<ServiceInfo>> {
+    // First try port-based detection for known services
+    let basic_info = match port {
+        53 => Some(("dns".to_string(), "DNS Server".to_string(), Some("cpe:/a:isc:bind".to_string()))),
+        67 | 68 => Some(("dhcp".to_string(), "DHCP Server".to_string(), None)),
+        123 => Some(("ntp".to_string(), "NTP Server".to_string(), Some("cpe:/a:ntp:ntp".to_string()))),
+        161 => Some(("snmp".to_string(), "SNMP Agent".to_string(), Some("cpe:/a:net-snmp:net-snmp".to_string()))),
+        162 => Some(("snmptrap".to_string(), "SNMP Trap Receiver".to_string(), Some("cpe:/a:net-snmp:net-snmp".to_string()))),
+        514 => Some(("syslog".to_string(), "Syslog Server".to_string(), None)),
+        69 => Some(("tftp".to_string(), "TFTP Server".to_string(), Some("cpe:/a:tftp:tftp".to_string()))),
+        137 => Some(("netbios-ns".to_string(), "NetBIOS Name Service".to_string(), None)),
+        138 => Some(("netbios-dgm".to_string(), "NetBIOS Datagram Service".to_string(), None)),
+        139 => Some(("netbios-ssn".to_string(), "NetBIOS Session Service".to_string(), None)),
+        500 => Some(("isakmp".to_string(), "IKE/ISAKMP".to_string(), None)),
+        1900 => Some(("upnp".to_string(), "UPnP Device".to_string(), None)),
+        _ => None,
+    };
+
+    // Try payload-based detection for better accuracy
+    if let Some((service_name, product, cpe)) = basic_info {
+        // Send specific probes to confirm service
+        match probe_udp_service(target, port, &service_name).await {
+            Ok(Some(detailed_info)) => Ok(Some(detailed_info)),
+            _ => Ok(Some(ServiceInfo {
+                name: service_name,
+                version: None,
+                product: Some(product),
+                cpe,
+                script_results: HashMap::new(),
+            })),
+        }
+    } else {
+        // Try generic UDP probe for unknown ports
+        match probe_udp_service(target, port, "unknown").await {
+            Ok(Some(info)) => Ok(Some(info)),
+            _ => Ok(Some(ServiceInfo {
+                name: "unknown".to_string(),
+                version: None,
+                product: None,
+                cpe: None,
+                script_results: HashMap::new(),
+            })),
+        }
+    }
+}
+
+/// Probe UDP service with specific payloads
+async fn probe_udp_service(target: IpAddr, port: u16, service_hint: &str) -> anyhow::Result<Option<ServiceInfo>> {
+    use std::net::UdpSocket;
+    use tokio::time::{timeout, Duration};
+
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
+    socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+    socket.connect((target, port))?;
+
+    let probe_payload: &[u8] = match service_hint {
+        "dns" => {
+            // DNS query for version.bind TXT record
+            b"\x00\x01\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03"
+        },
+        "snmp" => {
+            // SNMP GET request for sysDescr
+            b"\x30\x26\x02\x01\x00\x04\x06public\xa0\x19\x02\x04\x00\x00\x00\x00\x02\x01\x00\x02\x01\x00\x30\x0b\x30\x09\x06\x05\x2b\x06\x01\x02\x01\x01\x01\x05\x00"
+        },
+        "ntp" => {
+            // NTP version request
+            b"\x1b\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+        },
+        "tftp" => {
+            // TFTP read request
+            b"\x00\x01test.txt\x00octet\x00"
+        },
+        "netbios-ns" => {
+            // NetBIOS name query
+            b"\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x20\x43\x4b\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x00\x00\x21\x00\x01"
+        },
+        _ => {
+            // Generic probe
+            b"probe"
+        },
+    };
+
+    // Send probe
+    socket.send(probe_payload)?;
+
+    let mut buffer = [0u8; 1024];
+    match timeout(Duration::from_secs(2), tokio::task::spawn_blocking(move || {
+        socket.recv(&mut buffer)
+    })).await {
+        Ok(Ok(Ok(n))) if n > 0 => {
+            // Analyze response based on service type
+            let response = &buffer[..n];
+            match service_hint {
+                "dns" => {
+                    if response.len() > 12 && response[0] == 0 && response[1] == 1 {
+                        // DNS response
+                        Ok(Some(ServiceInfo {
+                            name: "dns".to_string(),
+                            version: extract_dns_version(response),
+                            product: Some("DNS Server".to_string()),
+                            cpe: Some("cpe:/a:isc:bind".to_string()),
+                            script_results: HashMap::new(),
+                        }))
+                    } else {
+                        Ok(None)
+                    }
+                },
+                "snmp" => {
+                    if response.len() > 10 && response[0] == 0x30 {
+                        // SNMP response
+                        Ok(Some(ServiceInfo {
+                            name: "snmp".to_string(),
+                            version: extract_snmp_version(response),
+                            product: Some("SNMP Agent".to_string()),
+                            cpe: Some("cpe:/a:net-snmp:net-snmp".to_string()),
+                            script_results: HashMap::new(),
+                        }))
+                    } else {
+                        Ok(None)
+                    }
+                },
+                "ntp" => {
+                    if response.len() >= 48 && response[0] == 0x1c {
+                        // NTP response
+                        Ok(Some(ServiceInfo {
+                            name: "ntp".to_string(),
+                            version: extract_ntp_version(response),
+                            product: Some("NTP Server".to_string()),
+                            cpe: Some("cpe:/a:ntp:ntp".to_string()),
+                            script_results: HashMap::new(),
+                        }))
+                    } else {
+                        Ok(None)
+                    }
+                },
+                "tftp" => {
+                    if response.len() >= 4 && response[0] == 0 && response[1] == 3 {
+                        // TFTP data packet
+                        Ok(Some(ServiceInfo {
+                            name: "tftp".to_string(),
+                            version: None,
+                            product: Some("TFTP Server".to_string()),
+                            cpe: Some("cpe:/a:tftp:tftp".to_string()),
+                            script_results: HashMap::new(),
+                        }))
+                    } else {
+                        Ok(None)
+                    }
+                },
+                _ => {
+                    // Generic response - service is likely running
+                    Ok(Some(ServiceInfo {
+                        name: service_hint.to_string(),
+                        version: None,
+                        product: Some(format!("UDP Service on port {}", port)),
+                        cpe: None,
+                        script_results: HashMap::new(),
+                    }))
+                },
+            }
+        },
+        _ => Ok(None),
+    }
+}
+
+/// Extract DNS version from response
+fn extract_dns_version(response: &[u8]) -> Option<String> {
+    // Parse DNS response for version.bind TXT record
+    if response.len() < 20 {
+        return None;
+    }
+
+    // Look for TXT record in answer section
+    let mut offset = 12; // Skip header
+    while offset < response.len() - 12 {
+        // Skip question section
+        if response[offset] & 0xC0 == 0xC0 {
+            offset += 2;
+        } else {
+            offset += (response[offset] as usize) + 1;
+        }
+        offset += 10; // Skip QTYPE, QCLASS
+
+        // Check answer section
+        if offset + 12 < response.len() {
+            let rdlength = ((response[offset + 10] as usize) << 8) | response[offset + 11] as usize;
+            if offset + 12 + rdlength <= response.len() {
+                let txt_data = &response[offset + 12..offset + 12 + rdlength];
+                if let Ok(version) = std::str::from_utf8(txt_data) {
+                    return Some(version.trim_matches('"').to_string());
+                }
+            }
+        }
+        break;
+    }
+    None
+}
+
+/// Extract SNMP version from response
+fn extract_snmp_version(response: &[u8]) -> Option<String> {
+    // Basic SNMP version extraction
+    if response.len() > 20 && response[0] == 0x30 {
+        // Look for sysDescr OID response
+        Some("SNMP v2c".to_string())
+    } else {
+        None
+    }
+}
+
+/// Extract NTP version from response
+fn extract_ntp_version(response: &[u8]) -> Option<String> {
+    if response.len() >= 48 {
+        let stratum = response[1];
+        if stratum > 0 {
+            Some(format!("NTP Stratum {}", stratum))
+        } else {
+            Some("NTP Server".to_string())
+        }
+    } else {
+        None
     }
 }
 

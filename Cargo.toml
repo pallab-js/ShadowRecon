@@ -2,7 +2,7 @@
 name = "shadowrecon"
 version = "0.1.0"
 edition = "2021"
-authors = ["ShadowRecon Contributors"]
+authors = ["pallab-js <sonowalpallabjyoti@gmail.com>"]
 description = "Advanced network discovery and port/service scanning tool"
 license = "MIT"
 repository = "https://github.com/pallab-js/ShadowRecon"

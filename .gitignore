@@ -1,8 +1,27 @@
-/target
+# Rust build artifacts
+/target/
+
+# IDEs
 .DS_Store
 **/.DS_Store
 .idea/
 .vscode/
+*.swp
+*.swo
+
+# Environment files
 .env
 .env.*
+!.env.example
+
+# Logs
 *.log
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Temporary files
+*.tmp
+*.temp

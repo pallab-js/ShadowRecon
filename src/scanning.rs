@@ -14,7 +14,7 @@ use crate::types::{PortState, ScanConfig, ScanTiming, ScanType};
 /// Port scanner that handles different scanning techniques
 #[derive(Clone)]
 pub struct PortScanner {
-    config: Arc<ScanConfig>,
+    pub config: Arc<ScanConfig>,
     timing: ScanTiming,
 }
 
@@ -56,12 +56,16 @@ pub async fn scan_ports(
 ) -> anyhow::Result<HashMap<u16, PortState>> {
     let mut results = HashMap::new();
 
+    // Sort ports by priority (common ports first) for better performance
+    let mut sorted_ports = ports.to_vec();
+    sorted_ports.sort_by_key(|&port| get_port_priority(port));
+
     // For efficiency, scan ports concurrently
     let semaphore = Arc::new(tokio::sync::Semaphore::new(scanner.config.threads));
 
     let mut tasks = Vec::new();
 
-    for &port in ports {
+    for &port in &sorted_ports {
         let scanner = scanner.clone();
         let semaphore = Arc::clone(&semaphore);
 
@@ -350,7 +354,7 @@ impl PortScanner {
             }
         }
 
-        // After retries with no response, classify as Filtered (more conservative than Open)
+        // After retries with no response, classify as open|filtered (UDP ports don't respond when open)
         Ok(PortState::Filtered)
     }
 
@@ -845,7 +849,7 @@ impl PortScanner {
 
 
 /// Get local IPv4 address for a network interface
-fn get_local_ipv4(interface: &pnet::datalink::NetworkInterface) -> Option<std::net::Ipv4Addr> {
+pub fn get_local_ipv4(interface: &pnet::datalink::NetworkInterface) -> Option<std::net::Ipv4Addr> {
     for ip in &interface.ips {
         if let std::net::IpAddr::V4(addr) = ip.ip() {
             return Some(addr);
@@ -854,11 +858,10 @@ fn get_local_ipv4(interface: &pnet::datalink::NetworkInterface) -> Option<std::n
     None
 }
 
-/// Get local IPv6 address for a network interface
-fn get_local_ipv6(interface: &pnet::datalink::NetworkInterface) -> Option<std::net::Ipv6Addr> {
+pub fn get_local_ipv6(interface: &pnet::datalink::NetworkInterface) -> Option<std::net::Ipv6Addr> {
     for ip in &interface.ips {
         if let std::net::IpAddr::V6(addr) = ip.ip() {
-            // Skip link-local addresses for now
+            // Skip link-local addresses
             if !addr.is_unicast_link_local() {
                 return Some(addr);
             }
@@ -867,8 +870,9 @@ fn get_local_ipv6(interface: &pnet::datalink::NetworkInterface) -> Option<std::n
     None
 }
 
+
 /// Calculate TCP checksum (simplified)
-fn calculate_tcp_checksum(
+pub fn calculate_tcp_checksum(
     tcp_packet: &pnet::packet::tcp::TcpPacket,
     source_ip: std::net::Ipv4Addr,
     dest_ip: std::net::Ipv4Addr,
@@ -966,7 +970,7 @@ fn calculate_tcp_checksum_ipv6(
 }
 
 /// Calculate IPv4 checksum (simplified)
-fn calculate_ipv4_checksum(ip_packet: &pnet::packet::ipv4::Ipv4Packet) -> u16 {
+pub fn calculate_ipv4_checksum(ip_packet: &pnet::packet::ipv4::Ipv4Packet) -> u16 {
     // Standard IPv4 header checksum with checksum field zeroed
     let header_len = (ip_packet.get_header_length() * 4) as usize;
     let data = &ip_packet.packet()[..header_len];
@@ -1111,4 +1115,31 @@ fn handle_raw_tcp_response(
     }
 
     Some(tcp.get_flags())
+}
+
+/// Get port priority for sorting (lower number = higher priority)
+fn get_port_priority(port: u16) -> u16 {
+    // Common ports get higher priority (lower number)
+    match port {
+        80 => 1,
+        443 => 2,
+        22 => 3,
+        21 => 4,
+        25 => 5,
+        53 => 6,
+        110 => 7,
+        143 => 8,
+        993 => 9,
+        995 => 10,
+        1723 => 44,
+        1812 => 45,
+        1813 => 46,
+        2049 => 47,
+        3268 => 48,
+        3269 => 49,
+        5060 => 50,
+        5061 => 51,
+        // Less common ports get higher numbers
+        _ => port + 1000, // Add offset so common ports come first
+    }
 }

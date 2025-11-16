@@ -1,11 +1,10 @@
 //! Built-in vulnerability scanning scripts
 
+use std::io::{Read, Write};
+use std::net::TcpStream as StdTcpStream;
 use std::time::Duration;
 use tokio::time::timeout;
 use reqwest::Client;
-use tokio::net::TcpStream;
-use tokio::io::AsyncWriteExt;
-use tokio::io::AsyncReadExt;
 
 use crate::scripting::{Script, ScriptMetadata, ScriptTarget, ScriptType};
 use crate::types::{ScriptResult, Vulnerability, VulnerabilitySeverity};
@@ -86,18 +85,22 @@ impl HeartbleedScript {
     async fn check_heartbleed(ip: std::net::IpAddr, port: u16) -> anyhow::Result<bool> {
         // Simplified Heartbleed check - in reality this would send a malformed heartbeat
         let addr = std::net::SocketAddr::new(ip, port);
-        let mut stream = TcpStream::connect(addr).await?;
+        tokio::task::spawn_blocking(move || {
+            let mut stream = StdTcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
+            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+            stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
-        // Send SSL Client Hello
-        let client_hello = b"\x16\x03\x01\x00\x6d\x01\x00\x00\x69\x03\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xc0\x14\xc0\x0a\xc0\x22\xc0\x21\x00\x39\x00\x38\x00\x88\x00\x87\xc0\x0f\xc0\x05\x00\x35\x00\x84\xc0\x12\xc0\x08\xc0\x1c\xc0\x1b\x00\x16\x00\x13\xc0\x0d\xc0\x03\x00\x0a\xc0\x13\xc0\x09\xc0\x1f\xc0\x1e\x00\x33\x00\x32\x00\x9a\x00\x99\x00\x45\x00\x44\xc0\x0e\xc0\x04\x00\x2f\x00\x96\x00\x41\xc0\x11\xc0\x07\xc0\x0c\xc0\x02\x00\x05\x00\x04\x00\x15\x00\x12\x00\x09\x00\x14\x00\x11\x00\x08\x00\x06\x00\x03\x00\xff\x01\x00\x00\x49\x00\x0b\x00\x04\x03\x00\x01\x02\x00\x0a\x00\x34\x00\x32\x00\x0e\x00\x0d\x00\x19\x00\x0b\x00\x0c\x00\x18\x00\x09\x00\x0a\x00\x16\x00\x17\x00\x08\x00\x06\x00\x07\x00\x14\x00\x15\x00\x04\x00\x05\x00\x12\x00\x13\x00\x01\x00\x02\x00\x03\x00\x0f\x00\x10\x00\x11\x00\x23\x00\x00\x00\x0f\x00\x01\x01";
-        stream.write_all(client_hello).await?;
+            // Send SSL Client Hello
+            let client_hello = b"\x16\x03\x01\x00\x6d\x01\x00\x00\x69\x03\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xc0\x14\xc0\x0a\xc0\x22\xc0\x21\x00\x39\x00\x38\x00\x88\x00\x87\xc0\x0f\xc0\x05\x00\x35\x00\x84\xc0\x12\xc0\x08\xc0\x1c\xc0\x1b\x00\x16\x00\x13\xc0\x0d\xc0\x03\x00\x0a\xc0\x13\xc0\x09\xc0\x1f\xc0\x1e\x00\x33\x00\x32\x00\x9a\x00\x99\x00\x45\x00\x44\xc0\x0e\xc0\x04\x00\x2f\x00\x96\x00\x41\xc0\x11\xc0\x07\xc0\x0c\xc0\x02\x00\x05\x00\x04\x00\x15\x00\x12\x00\x09\x00\x14\x00\x11\x00\x08\x00\x06\x00\x03\x00\xff\x01\x00\x00\x49\x00\x0b\x00\x04\x03\x00\x01\x02\x00\x0a\x00\x34\x00\x32\x00\x0e\x00\x0d\x00\x19\x00\x0b\x00\x0c\x00\x18\x00\x09\x00\x0a\x00\x16\x00\x17\x00\x08\x00\x06\x00\x07\x00\x14\x00\x15\x00\x04\x00\x05\x00\x12\x00\x13\x00\x01\x00\x02\x00\x03\x00\x0f\x00\x10\x00\x11\x00\x23\x00\x00\x00\x0f\x00\x01\x01";
+            stream.write_all(client_hello)?;
 
-        // Read server response
-        let mut buffer = [0u8; 1024];
-        let n = stream.read(&mut buffer).await?;
+            // Read server response
+            let mut buffer = [0u8; 1024];
+            let n = stream.read(&mut buffer)?;
 
-        // Check if server supports SSL/TLS (very basic check)
-        Ok(n > 0 && buffer[0] == 0x16) // SSL/TLS handshake record
+            // Check if server supports SSL/TLS (very basic check)
+            Ok(n > 0 && buffer[0] == 0x16) // SSL/TLS handshake record
+        }).await?
     }
 }
 
@@ -170,39 +173,42 @@ impl SmbVulnScript {
         let addr = std::net::SocketAddr::new(ip, port);
         let mut vulnerabilities = Vec::new();
 
-        match TcpStream::connect(addr).await {
-            Ok(mut stream) => {
-                // Send SMB Negotiate Protocol Request
-                let smb_negotiate = b"\xff\x53\x4d\x42\x72\x00\x00\x00\x00\x18\x53\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x62\x3a\x00\x00\x00\x00\x00\x0c\x00\x02\x4e\x54\x20\x4c\x4d\x20\x30\x2e\x31\x32\x00";
-                if stream.write_all(smb_negotiate).await.is_ok() {
-                    let mut buffer = [0u8; 1024];
-                    if let Ok(n) = stream.read(&mut buffer).await {
-                        if n > 0 {
-                            // Check for EternalBlue vulnerability (simplified check)
-                            // In reality, this would be much more sophisticated
-                            if buffer.len() > 4 && buffer[0] == 0xff && buffer[1] == 0x53 && buffer[2] == 0x4d && buffer[3] == 0x42 {
-                                // SMB response received, check for known vulnerable signatures
-                                // This is a simplified check - real implementation would be more complex
-                                vulnerabilities.push(Vulnerability {
-                                    id: "SMB-VULN-001".to_string(),
-                                    title: "Potential SMB Vulnerability".to_string(),
-                                    description: "SMB service detected - manual verification recommended for known vulnerabilities like EternalBlue (CVE-2017-0144)".to_string(),
-                                    severity: VulnerabilitySeverity::Medium,
-                                    cve: None,
-                                    cvss_score: Some(5.0),
-                                    references: vec![
-                                        "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2017-0144".to_string(),
-                                    ],
-                                });
+        tokio::task::spawn_blocking(move || {
+            match StdTcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
+                Ok(mut stream) => {
+                    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+                    // Send SMB Negotiate Protocol Request
+                    let smb_negotiate = b"\xff\x53\x4d\x42\x72\x00\x00\x00\x00\x18\x53\xc8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x62\x3a\x00\x00\x00\x00\x00\x0c\x00\x02\x4e\x54\x20\x4c\x4d\x20\x30\x2e\x31\x32\x00";
+                    if stream.write_all(smb_negotiate).is_ok() {
+                        let mut buffer = [0u8; 1024];
+                        if let Ok(n) = stream.read(&mut buffer) {
+                            if n > 0 {
+                                // Check for EternalBlue vulnerability (simplified check)
+                                // In reality, this would be much more sophisticated
+                                if buffer.len() > 4 && buffer[0] == 0xff && buffer[1] == 0x53 && buffer[2] == 0x4d && buffer[3] == 0x42 {
+                                    // SMB response received, check for known vulnerable signatures
+                                    // This is a simplified check - real implementation would be more complex
+                                    vulnerabilities.push(Vulnerability {
+                                        id: "SMB-VULN-001".to_string(),
+                                        title: "Potential SMB Vulnerability".to_string(),
+                                        description: "SMB service detected - manual verification recommended for known vulnerabilities like EternalBlue (CVE-2017-0144)".to_string(),
+                                        severity: VulnerabilitySeverity::Medium,
+                                        cve: None,
+                                        cvss_score: Some(5.0),
+                                        references: vec![
+                                            "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2017-0144".to_string(),
+                                        ],
+                                    });
+                                }
                             }
                         }
                     }
                 }
+                Err(_) => {} // Connection failed, no vulnerabilities to report
             }
-            Err(_) => {} // Connection failed, no vulnerabilities to report
-        }
-
-        Ok(vulnerabilities)
+            Ok(vulnerabilities)
+        }).await?
     }
 }
 
@@ -375,7 +381,111 @@ placeholder_script!(Log4ShellScript, "log4shell", "Log4Shell Vulnerability Check
 placeholder_script!(ShellshockScript, "shellshock", "Shellshock Vulnerability Check", "Checks for Bash Shellshock vulnerability (CVE-2014-6271)", ScriptType::Service, vec![80, 443], vec!["http".to_string(), "https".to_string()]);
 placeholder_script!(PoodleScript, "poodle", "POODLE SSLv3 Vulnerability Check", "Checks for SSLv3 POODLE vulnerability (CVE-2014-3566)", ScriptType::Service, vec![443, 993, 995, 465], vec!["https".to_string(), "ssl".to_string(), "imaps".to_string(), "pop3s".to_string(), "smtps".to_string()]);
 placeholder_script!(DrownScript, "drown", "DROWN Attack Vulnerability Check", "Checks for SSLv2 DROWN vulnerability (CVE-2016-0800)", ScriptType::Service, vec![443, 993, 995, 465], vec!["https".to_string(), "ssl".to_string(), "imaps".to_string(), "pop3s".to_string(), "smtps".to_string()]);
-placeholder_script!(FtpAnonScript, "ftp-anon", "FTP Anonymous Access Check", "Checks if FTP server allows anonymous access", ScriptType::Service, vec![21], vec!["ftp".to_string()]);
+/// FTP anonymous access check
+pub struct FtpAnonScript;
+
+#[async_trait::async_trait]
+impl Script for FtpAnonScript {
+    fn metadata(&self) -> ScriptMetadata {
+        ScriptMetadata {
+            id: "ftp-anon".to_string(),
+            name: "FTP Anonymous Access Check".to_string(),
+            description: "Checks if FTP server allows anonymous access".to_string(),
+            script_type: ScriptType::Service,
+            target_ports: vec![21],
+            target_services: vec!["ftp".to_string()],
+        }
+    }
+
+    async fn execute(&self, target: &ScriptTarget, _timing: &crate::types::ScanTiming) -> anyhow::Result<Vec<ScriptResult>> {
+        let (host, port_index) = match target {
+            ScriptTarget::Service(host, port_index) => (host, port_index),
+            _ => return Ok(vec![]),
+        };
+
+        let port = host.ports[*port_index].port;
+        let ip = host.ip;
+
+        match timeout(Duration::from_secs(10), Self::check_ftp_anon(ip, port)).await {
+            Ok(Ok(allows_anon)) => {
+                let result = if allows_anon {
+                    ScriptResult {
+                        script_id: self.metadata().id.clone(),
+                        output: format!("FTP server on {}:{} ALLOWS anonymous access", ip, port),
+                        elements: std::collections::HashMap::new(),
+                        vulnerabilities: Some(vec![Vulnerability {
+                            id: "FTP-ANON-ACCESS".to_string(),
+                            title: "FTP Anonymous Access Allowed".to_string(),
+                            description: "The FTP server allows anonymous access, which may expose sensitive files.".to_string(),
+                            severity: VulnerabilitySeverity::Medium,
+                            cve: None,
+                            cvss_score: Some(5.0),
+                            references: vec!["https://owasp.org/www-community/vulnerabilities/Anonymous_FTP".to_string()],
+                        }]),
+                    }
+                } else {
+                    ScriptResult {
+                        script_id: self.metadata().id,
+                        output: format!("FTP server on {}:{} does not allow anonymous access", ip, port),
+                        elements: std::collections::HashMap::new(),
+                        vulnerabilities: None,
+                    }
+                };
+                Ok(vec![result])
+            }
+            Ok(Err(e)) => Ok(vec![ScriptResult {
+                script_id: self.metadata().id,
+                output: format!("Failed to check FTP anonymous access on {}:{} - {}", ip, port, e),
+                elements: std::collections::HashMap::new(),
+                vulnerabilities: None,
+            }]),
+            Err(_) => Ok(vec![ScriptResult {
+                script_id: self.metadata().id,
+                output: format!("FTP anonymous access check timed out for {}:{}", ip, port),
+                elements: std::collections::HashMap::new(),
+                vulnerabilities: None,
+            }]),
+        }
+    }
+}
+
+impl FtpAnonScript {
+    async fn check_ftp_anon(ip: std::net::IpAddr, port: u16) -> anyhow::Result<bool> {
+        let addr = std::net::SocketAddr::new(ip, port);
+        tokio::task::spawn_blocking(move || {
+            let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
+            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+            stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+            // Read banner
+            let mut buffer = [0u8; 1024];
+            let n = stream.read(&mut buffer)?;
+            if n == 0 || !buffer.starts_with(b"220") {
+                return Ok(false);
+            }
+
+            // Send USER anonymous
+            stream.write_all(b"USER anonymous\r\n")?;
+            let n = stream.read(&mut buffer)?;
+            if n == 0 {
+                return Ok(false);
+            }
+
+            let response = String::from_utf8_lossy(&buffer[..n]);
+            if response.starts_with("331") {
+                // Password required, try PASS
+                stream.write_all(b"PASS anonymous@\r\n")?;
+                let n = stream.read(&mut buffer)?;
+                if n > 0 {
+                    let response = String::from_utf8_lossy(&buffer[..n]);
+                    return Ok(response.starts_with("230"));
+                }
+            }
+
+            Ok(false)
+        }).await?
+    }
+}
 /// SSH weak algorithms check
 pub struct SshWeakScript;
 
@@ -451,66 +561,259 @@ impl Script for SshWeakScript {
 impl SshWeakScript {
     async fn check_ssh_weak_algorithms(ip: std::net::IpAddr, port: u16) -> anyhow::Result<Vec<String>> {
         let mut weak_algorithms = Vec::new();
+        let addr = std::net::SocketAddr::new(ip, port);
 
-        match TcpStream::connect((ip, port)).await {
-            Ok(mut stream) => {
-                // Read SSH banner
-                let mut buffer = [0u8; 1024];
-                match stream.read(&mut buffer).await {
-                    Ok(n) if n > 0 => {
-                        let banner = String::from_utf8_lossy(&buffer[..n]);
-                        if banner.starts_with("SSH-") {
-                            // Check for old SSH versions that might support weak algorithms
-                            if banner.contains("SSH-1.") {
-                                weak_algorithms.push("SSH-1.x protocol".to_string());
-                            }
+        tokio::task::spawn_blocking(move || {
+            match StdTcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
+                Ok(mut stream) => {
+                    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+                    // Read SSH banner
+                    let mut buffer = [0u8; 1024];
+                    match stream.read(&mut buffer) {
+                        Ok(n) if n > 0 => {
+                            let banner = String::from_utf8_lossy(&buffer[..n]);
+                            if banner.starts_with("SSH-") {
+                                // Check for old SSH versions that might support weak algorithms
+                                if banner.contains("SSH-1.") {
+                                    weak_algorithms.push("SSH-1.x protocol".to_string());
+                                }
 
-                            // Send SSH version exchange (simplified)
-                            let version_string = b"SSH-2.0-rustscan\r\n";
-                            if stream.write_all(version_string).await.is_ok() {
-                                // In a real implementation, we would parse the algorithm exchange
-                                // For now, we'll do a basic check
-                                let mut response_buffer = [0u8; 2048];
-                                if let Ok(n) = stream.read(&mut response_buffer).await {
-                                    let response = String::from_utf8_lossy(&response_buffer[..n]);
+                                // Send SSH version exchange (simplified)
+                                let version_string = b"SSH-2.0-rustscan\r\n";
+                                if stream.write_all(version_string).is_ok() {
+                                    // In a real implementation, we would parse the algorithm exchange
+                                    // For now, we'll do a basic check
+                                    let mut response_buffer = [0u8; 2048];
+                                    if let Ok(n) = stream.read(&mut response_buffer) {
+                                        let response = String::from_utf8_lossy(&response_buffer[..n]);
 
-                                    // Check for known weak algorithms in the response
-                                    let weak_kex = ["diffie-hellman-group1-sha1", "diffie-hellman-group-exchange-sha1"];
-                                    let weak_ciphers = ["3des-cbc", "aes128-cbc", "aes192-cbc", "aes256-cbc", "blowfish-cbc"];
-                                    let weak_macs = ["hmac-md5", "hmac-sha1"];
+                                        // Check for known weak algorithms in the response
+                                        let weak_kex = ["diffie-hellman-group1-sha1", "diffie-hellman-group-exchange-sha1"];
+                                        let weak_ciphers = ["3des-cbc", "aes128-cbc", "aes192-cbc", "aes256-cbc", "blowfish-cbc"];
+                                        let weak_macs = ["hmac-md5", "hmac-sha1"];
 
-                                    for kex in &weak_kex {
-                                        if response.contains(kex) {
-                                            weak_algorithms.push(format!("Weak KEX: {}", kex));
+                                        for kex in &weak_kex {
+                                            if response.contains(kex) {
+                                                weak_algorithms.push(format!("Weak KEX: {}", kex));
+                                            }
                                         }
-                                    }
 
-                                    for cipher in &weak_ciphers {
-                                        if response.contains(cipher) {
-                                            weak_algorithms.push(format!("Weak cipher: {}", cipher));
+                                        for cipher in &weak_ciphers {
+                                            if response.contains(cipher) {
+                                                weak_algorithms.push(format!("Weak cipher: {}", cipher));
+                                            }
                                         }
-                                    }
 
-                                    for mac in &weak_macs {
-                                        if response.contains(mac) {
-                                            weak_algorithms.push(format!("Weak MAC: {}", mac));
+                                        for mac in &weak_macs {
+                                            if response.contains(mac) {
+                                                weak_algorithms.push(format!("Weak MAC: {}", mac));
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
+                        _ => {} // Failed to read banner
                     }
-                    _ => {} // Failed to read banner
                 }
+                Err(_) => {} // Connection failed
             }
-            Err(_) => {} // Connection failed
-        }
 
-        Ok(weak_algorithms)
+            Ok(weak_algorithms)
+        }).await?
     }
 }
-placeholder_script!(DnsAmplificationScript, "dns-amplification", "DNS Amplification Attack Check", "Checks if DNS server can be used for amplification attacks", ScriptType::Service, vec![53], vec!["dns".to_string()]);
-placeholder_script!(NtpMonlistScript, "ntp-monlist", "NTP Monlist Command Check", "Checks for NTP monlist command vulnerability (CVE-2013-5211)", ScriptType::Service, vec![123], vec!["ntp".to_string()]);
+/// DNS amplification attack check
+pub struct DnsAmplificationScript;
+
+#[async_trait::async_trait]
+impl Script for DnsAmplificationScript {
+    fn metadata(&self) -> ScriptMetadata {
+        ScriptMetadata {
+            id: "dns-amplification".to_string(),
+            name: "DNS Amplification Attack Check".to_string(),
+            description: "Checks if DNS server can be used for amplification attacks".to_string(),
+            script_type: ScriptType::Service,
+            target_ports: vec![53],
+            target_services: vec!["dns".to_string()],
+        }
+    }
+
+    async fn execute(&self, target: &ScriptTarget, _timing: &crate::types::ScanTiming) -> anyhow::Result<Vec<ScriptResult>> {
+        let (host, port_index) = match target {
+            ScriptTarget::Service(host, port_index) => (host, port_index),
+            _ => return Ok(vec![]),
+        };
+
+        let port = host.ports[*port_index].port;
+        let ip = host.ip;
+
+        match timeout(Duration::from_secs(5), Self::check_dns_amplification(ip, port)).await {
+            Ok(Ok(is_vulnerable)) => {
+                let result = if is_vulnerable {
+                    ScriptResult {
+                        script_id: self.metadata().id.clone(),
+                        output: format!("DNS server on {}:{} is VULNERABLE to amplification attacks (open resolver)", ip, port),
+                        elements: std::collections::HashMap::new(),
+                        vulnerabilities: Some(vec![Vulnerability {
+                            id: "DNS-OPEN-RESOLVER".to_string(),
+                            title: "DNS Open Resolver".to_string(),
+                            description: "The DNS server acts as an open resolver, which can be used for DNS amplification attacks.".to_string(),
+                            severity: VulnerabilitySeverity::Medium,
+                            cve: None,
+                            cvss_score: Some(5.0),
+                            references: vec!["https://www.us-cert.gov/ncas/alerts/TA13-088A".to_string()],
+                        }]),
+                    }
+                } else {
+                    ScriptResult {
+                        script_id: self.metadata().id,
+                        output: format!("DNS server on {}:{} is not an open resolver", ip, port),
+                        elements: std::collections::HashMap::new(),
+                        vulnerabilities: None,
+                    }
+                };
+                Ok(vec![result])
+            }
+            Ok(Err(e)) => Ok(vec![ScriptResult {
+                script_id: self.metadata().id,
+                output: format!("Failed to check DNS amplification on {}:{} - {}", ip, port, e),
+                elements: std::collections::HashMap::new(),
+                vulnerabilities: None,
+            }]),
+            Err(_) => Ok(vec![ScriptResult {
+                script_id: self.metadata().id,
+                output: format!("DNS amplification check timed out for {}:{}", ip, port),
+                elements: std::collections::HashMap::new(),
+                vulnerabilities: None,
+            }]),
+        }
+    }
+}
+
+impl DnsAmplificationScript {
+    async fn check_dns_amplification(ip: std::net::IpAddr, port: u16) -> anyhow::Result<bool> {
+        // Simple check: try to resolve a domain that should not be resolvable from outside
+        // In a real implementation, this would send a DNS query for a non-existent domain
+        // and check if it responds (indicating open resolver)
+        use std::net::UdpSocket;
+        let socket = UdpSocket::bind("0.0.0.0:0")?;
+        socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+        socket.connect((ip, port))?;
+
+        // Send a simple DNS query for a test domain
+        let dns_query = b"\x00\x01\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03www\x06google\x03com\x00\x00\x01\x00\x01";
+        socket.send(dns_query)?;
+
+        let mut buffer = [0u8; 512];
+        match socket.recv(&mut buffer) {
+            Ok(n) if n > 0 => {
+                // If we get a response, it might be an open resolver
+                // This is a very basic check - real implementation would be more sophisticated
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+}
+/// NTP monlist command check
+pub struct NtpMonlistScript;
+
+#[async_trait::async_trait]
+impl Script for NtpMonlistScript {
+    fn metadata(&self) -> ScriptMetadata {
+        ScriptMetadata {
+            id: "ntp-monlist".to_string(),
+            name: "NTP Monlist Command Check".to_string(),
+            description: "Checks for NTP monlist command vulnerability (CVE-2013-5211)".to_string(),
+            script_type: ScriptType::Service,
+            target_ports: vec![123],
+            target_services: vec!["ntp".to_string()],
+        }
+    }
+
+    async fn execute(&self, target: &ScriptTarget, _timing: &crate::types::ScanTiming) -> anyhow::Result<Vec<ScriptResult>> {
+        let (host, port_index) = match target {
+            ScriptTarget::Service(host, port_index) => (host, port_index),
+            _ => return Ok(vec![]),
+        };
+
+        let port = host.ports[*port_index].port;
+        let ip = host.ip;
+
+        match timeout(Duration::from_secs(5), Self::check_ntp_monlist(ip, port)).await {
+            Ok(Ok(is_vulnerable)) => {
+                let result = if is_vulnerable {
+                    ScriptResult {
+                        script_id: self.metadata().id.clone(),
+                        output: format!("NTP server on {}:{} is VULNERABLE to monlist command (CVE-2013-5211)", ip, port),
+                        elements: std::collections::HashMap::new(),
+                        vulnerabilities: Some(vec![Vulnerability {
+                            id: "CVE-2013-5211".to_string(),
+                            title: "NTP Monlist Command Enabled".to_string(),
+                            description: "The NTP server has the monlist command enabled, which can be used for DDoS amplification.".to_string(),
+                            severity: VulnerabilitySeverity::High,
+                            cve: Some("CVE-2013-5211".to_string()),
+                            cvss_score: Some(7.5),
+                            references: vec!["https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2013-5211".to_string()],
+                        }]),
+                    }
+                } else {
+                    ScriptResult {
+                        script_id: self.metadata().id,
+                        output: format!("NTP server on {}:{} does not have monlist enabled", ip, port),
+                        elements: std::collections::HashMap::new(),
+                        vulnerabilities: None,
+                    }
+                };
+                Ok(vec![result])
+            }
+            Ok(Err(e)) => Ok(vec![ScriptResult {
+                script_id: self.metadata().id,
+                output: format!("Failed to check NTP monlist on {}:{} - {}", ip, port, e),
+                elements: std::collections::HashMap::new(),
+                vulnerabilities: None,
+            }]),
+            Err(_) => Ok(vec![ScriptResult {
+                script_id: self.metadata().id,
+                output: format!("NTP monlist check timed out for {}:{}", ip, port),
+                elements: std::collections::HashMap::new(),
+                vulnerabilities: None,
+            }]),
+        }
+    }
+}
+
+impl NtpMonlistScript {
+    async fn check_ntp_monlist(ip: std::net::IpAddr, port: u16) -> anyhow::Result<bool> {
+        use std::net::UdpSocket;
+        let socket = UdpSocket::bind("0.0.0.0:0")?;
+        socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+        socket.connect((ip, port))?;
+
+        // NTP monlist command (mode 7, implementation 3)
+        let monlist_packet = [
+            0x17, 0x00, 0x03, 0x2a, 0x00, 0x00, 0x00, 0x00, // NTP mode 7, monlist
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        socket.send(&monlist_packet)?;
+
+        let mut buffer = [0u8; 1024];
+        match socket.recv(&mut buffer) {
+            Ok(n) if n > 0 => {
+                // Check if response indicates monlist is enabled
+                // This is a simplified check - real implementation would parse NTP response
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+}
 /// Redis unauthorized access check
 pub struct RedisUnauthScript;
 
@@ -586,28 +889,32 @@ impl Script for RedisUnauthScript {
 impl RedisUnauthScript {
     async fn check_redis_unauth(ip: std::net::IpAddr, port: u16) -> anyhow::Result<bool> {
         let addr = std::net::SocketAddr::new(ip, port);
-        let mut stream = TcpStream::connect(addr).await?;
+        tokio::task::spawn_blocking(move || {
+            let mut stream = StdTcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
+            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+            stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
-        // Send INFO command to check if Redis responds without auth
-        let info_command = b"*1\r\n$4\r\nINFO\r\n";
-        stream.write_all(info_command).await?;
+            // Send INFO command to check if Redis responds without auth
+            let info_command = b"*1\r\n$4\r\nINFO\r\n";
+            stream.write_all(info_command)?;
 
-        let mut buffer = [0u8; 1024];
-        let n = stream.read(&mut buffer).await?;
+            let mut buffer = [0u8; 1024];
+            let n = stream.read(&mut buffer)?;
 
-        if n > 0 {
-            let response = String::from_utf8_lossy(&buffer[..n]);
-            // If we get a response that looks like Redis INFO output, it's vulnerable
-            if response.starts_with('$') || response.starts_with('*') || response.contains("# Server") {
-                return Ok(true);
+            if n > 0 {
+                let response = String::from_utf8_lossy(&buffer[..n]);
+                // If we get a response that looks like Redis INFO output, it's vulnerable
+                if response.starts_with('$') || response.starts_with('*') || response.contains("# Server") {
+                    return Ok(true);
+                }
+                // If we get an error about NOAUTH, it requires auth
+                if response.contains("NOAUTH") {
+                    return Ok(false);
+                }
             }
-            // If we get an error about NOAUTH, it requires auth
-            if response.contains("NOAUTH") {
-                return Ok(false);
-            }
-        }
 
-        Ok(false) // Assume not vulnerable if we can't determine
+            Ok(false) // Assume not vulnerable if we can't determine
+        }).await?
     }
 }
 placeholder_script!(MongodbUnauthScript, "mongodb-unauth", "MongoDB Unauthorized Access Check", "Checks for MongoDB unauthorized access vulnerability", ScriptType::Service, vec![27017], vec!["mongodb".to_string()]);

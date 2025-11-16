@@ -300,7 +300,10 @@ pub struct ScanTiming {
     pub max_rtt_timeout: Duration,
     pub max_retries: u32,
     pub host_timeout: Duration,
+    // Future: configurable delays between scans
+    #[allow(dead_code)]
     pub scan_delay: Option<Duration>,
+    #[allow(dead_code)]
     pub max_scan_delay: Option<Duration>,
 }
 
@@ -310,10 +313,16 @@ pub struct DiscoveryOptions {
     pub ping_sweep: bool,
     pub arp_scan: bool,
     pub traceroute: bool,
+    // Future: reverse DNS for all discovered hosts
+    #[allow(dead_code)]
     pub reverse_dns: bool,
     pub os_detection: bool,
+    // Future: advanced service version detection
+    #[allow(dead_code)]
     pub service_version: bool,
     pub script_scan: bool,
+    // Future: timing-based discovery adjustments
+    #[allow(dead_code)]
     pub aggressive_timing: bool,
 }
 

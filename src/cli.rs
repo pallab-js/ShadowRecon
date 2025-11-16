@@ -305,8 +305,19 @@ fn parse_targets(matches: &ArgMatches) -> Result<Vec<String>, Box<dyn std::error
                 }
             }
         } else {
+            // Basic validation for target format
+            if target.contains("..") {
+                return Err("Invalid target format: '..' not allowed".into());
+            }
+            if target.len() > 253 {
+                return Err("Target too long".into());
+            }
             expanded_targets.push(target);
         }
+    }
+
+    if expanded_targets.is_empty() {
+        return Err("No valid targets specified".into());
     }
 
     Ok(expanded_targets)
@@ -427,7 +438,6 @@ fn parse_decoy_ips(matches: &ArgMatches) -> Result<Vec<IpAddr>, Box<dyn std::err
 }
 
 /// Create discovery options from command line arguments
-#[allow(dead_code)]
 pub fn create_discovery_options(matches: &ArgMatches) -> DiscoveryOptions {
     let aggressive = matches.get_flag("aggressive");
 

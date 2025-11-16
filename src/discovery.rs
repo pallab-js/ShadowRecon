@@ -427,69 +427,121 @@ pub async fn traceroute(
 ) -> anyhow::Result<Vec<crate::types::TracerouteHop>> {
     let mut hops = Vec::new();
 
-    if let IpAddr::V4(target_ip) = target {
-        // Get network interface
-        let interfaces = datalink::interfaces();
-        let interface = interfaces
-            .into_iter()
-            .find(|iface| !iface.is_loopback() && iface.is_up())
-            .ok_or_else(|| anyhow::anyhow!("No suitable network interface found"))?;
+    match target {
+        IpAddr::V4(target_ip) => {
+            // Get network interface
+            let interfaces = datalink::interfaces();
+            let interface = interfaces
+                .into_iter()
+                .find(|iface| !iface.is_loopback() && iface.is_up())
+                .ok_or_else(|| anyhow::anyhow!("No suitable network interface found"))?;
 
-        let source_ip = get_local_ipv4(&interface)
-            .ok_or_else(|| anyhow::anyhow!("Could not determine local IPv4 address"))?;
+            let source_ip = get_local_ipv4(&interface)
+                .ok_or_else(|| anyhow::anyhow!("Could not determine local IPv4 address"))?;
 
-        // Use ICMP TTL exceeded messages for traceroute
-        for ttl in 1..=max_hops {
-            let _start_time = Instant::now();
+            // Use ICMP TTL exceeded messages for traceroute
+            for ttl in 1..=max_hops {
+                let _start_time = Instant::now();
 
-            // Create ICMP echo request with increasing TTL
-            match icmp_traceroute_probe(target_ip, source_ip, ttl, &interface, timeout).await {
-                Ok(Some((hop_ip, rtt))) => {
-                    // Try reverse DNS lookup for hop
-                    let hostname = dns_lookup::lookup_addr(&IpAddr::V4(hop_ip)).ok();
-                    hops.push(crate::types::TracerouteHop {
-                        hop: ttl,
-                        ip: IpAddr::V4(hop_ip),
-                        rtt,
-                        hostname,
-                    });
-                    
-                    // If we reached the target, stop
-                    if hop_ip == target_ip {
+                // Create ICMP echo request with increasing TTL
+                match icmp_traceroute_probe_ipv4(target_ip, source_ip, ttl, &interface, timeout).await {
+                    Ok(Some((hop_ip, rtt))) => {
+                        // Try reverse DNS lookup for hop
+                        let hostname = dns_lookup::lookup_addr(&IpAddr::V4(hop_ip)).ok();
+                        hops.push(crate::types::TracerouteHop {
+                            hop: ttl,
+                            ip: IpAddr::V4(hop_ip),
+                            rtt,
+                            hostname,
+                        });
+
+                        // If we reached the target, stop
+                        if hop_ip == target_ip {
+                            break;
+                        }
+                    }
+                    Ok(None) => {
+                        // No response - indicate timeout
+                        hops.push(crate::types::TracerouteHop {
+                            hop: ttl,
+                            ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                            rtt: timeout,
+                            hostname: None,
+                        });
+                        // Continue for a few more hops before giving up
+                        if hops.len() >= 3 && hops[hops.len()-3].ip == IpAddr::V4(Ipv4Addr::UNSPECIFIED) {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("Traceroute probe failed at hop {}: {}", ttl, e);
                         break;
                     }
                 }
-                Ok(None) => {
-                    // No response - indicate timeout
-                    hops.push(crate::types::TracerouteHop {
-                        hop: ttl,
-                        ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                        rtt: timeout,
-                        hostname: None,
-                    });
-                    // Continue for a few more hops before giving up
-                    if hops.len() >= 3 && hops[hops.len()-3].ip == IpAddr::V4(Ipv4Addr::UNSPECIFIED) {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!("Traceroute probe failed at hop {}: {}", ttl, e);
-                    break;
-                }
+
+                // Small delay between hops
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
-
-            // Small delay between hops
-            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-    } else {
-        tracing::warn!("IPv6 traceroute not yet implemented");
+        IpAddr::V6(target_ip) => {
+            // Get network interface
+            let interfaces = datalink::interfaces();
+            let interface = interfaces
+                .into_iter()
+                .find(|iface| !iface.is_loopback() && iface.is_up())
+                .ok_or_else(|| anyhow::anyhow!("No suitable network interface found"))?;
+
+            let source_ip = get_local_ipv6(&interface)
+                .ok_or_else(|| anyhow::anyhow!("Could not determine local IPv6 address"))?;
+
+            // Use ICMPv6 for IPv6 traceroute
+            for ttl in 1..=max_hops {
+                match icmpv6_traceroute_probe(target_ip, source_ip, ttl, &interface, timeout).await {
+                    Ok(Some((hop_ip, rtt))) => {
+                        // Try reverse DNS lookup for hop
+                        let hostname = dns_lookup::lookup_addr(&IpAddr::V6(hop_ip)).ok();
+                        hops.push(crate::types::TracerouteHop {
+                            hop: ttl,
+                            ip: IpAddr::V6(hop_ip),
+                            rtt,
+                            hostname,
+                        });
+
+                        // If we reached the target, stop
+                        if hop_ip == target_ip {
+                            break;
+                        }
+                    }
+                    Ok(None) => {
+                        // No response - indicate timeout
+                        hops.push(crate::types::TracerouteHop {
+                            hop: ttl,
+                            ip: IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+                            rtt: timeout,
+                            hostname: None,
+                        });
+                        // Continue for a few more hops before giving up
+                        if hops.len() >= 3 && hops[hops.len()-3].ip == IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED) {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("IPv6 traceroute probe failed at hop {}: {}", ttl, e);
+                        break;
+                    }
+                }
+
+                // Small delay between hops
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
     }
 
     Ok(hops)
 }
 
-/// Send ICMP probe with specific TTL for traceroute
-async fn icmp_traceroute_probe(
+/// Send ICMP probe with specific TTL for IPv4 traceroute
+async fn icmp_traceroute_probe_ipv4(
     target_ip: Ipv4Addr,
     source_ip: Ipv4Addr,
     ttl: u8,
@@ -598,36 +650,134 @@ async fn icmp_traceroute_probe(
     Ok(None)
 }
 
-/// Send a single ICMP echo request
-#[allow(dead_code)]
-async fn send_icmp_ping(
-    _target: Ipv4Addr,
-    _interface: &NetworkInterface,
-    _timeout_duration: Duration,
-) -> anyhow::Result<bool> {
-    // TODO: Implement ICMP ping using raw sockets
-    // This requires root privileges on most systems
-    tracing::warn!("ICMP ping not implemented - requires raw socket access");
+/// Send ICMPv6 probe with specific hop limit for traceroute
+async fn icmpv6_traceroute_probe(
+    target_ip: std::net::Ipv6Addr,
+    source_ip: std::net::Ipv6Addr,
+    hop_limit: u8,
+    interface: &NetworkInterface,
+    timeout: Duration,
+) -> anyhow::Result<Option<(std::net::Ipv6Addr, Duration)>> {
+    use pnet::datalink;
+    use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
+    use pnet::packet::icmpv6::echo_request::MutableEchoRequestPacket;
+    use pnet::packet::icmpv6::{Icmpv6Types};
+    use pnet::packet::ipv6::{MutableIpv6Packet, Ipv6Packet};
+    use pnet::packet::ip::IpNextHeaderProtocols;
+    use pnet::packet::Packet;
 
-    // Simulate ping result
-    tokio::time::sleep(Duration::from_millis(10)).await;
-    Ok(rand::random::<bool>())
-}
+    // Open channel
+    let (mut tx, mut rx) = match datalink::channel(interface, Default::default()) {
+        Ok(datalink::Channel::Ethernet(tx, rx)) => (tx, rx),
+        _ => return Ok(None),
+    };
 
-/// Best-effort IPv6 liveness check using TCP connect on common ports
-#[allow(dead_code)]
-async fn is_ipv6_alive(target: IpAddr, timeout: Duration) -> anyhow::Result<bool> {
-    use tokio::time::timeout as tokio_timeout;
-    use tokio::net::TcpStream as TokioTcpStream;
+    // ICMPv6 Echo Request
+    let mut icmp_buf = [0u8; 8];
+    let mut icmp = MutableEchoRequestPacket::new(&mut icmp_buf).ok_or_else(|| anyhow::anyhow!("Failed to build ICMPv6"))?;
+    icmp.set_icmpv6_type(Icmpv6Types::EchoRequest);
+    icmp.set_identifier(rand::random::<u16>());
+    let sequence_number = hop_limit as u16;
+    icmp.set_sequence_number(sequence_number);
+    icmp.set_checksum(0);
 
-    let ports = [80u16, 443u16, 22u16];
-    for port in ports {
-        let addr = (target, port);
-        if let Ok(Ok(_)) = tokio_timeout(timeout, TokioTcpStream::connect(addr)).await {
-            return Ok(true);
+    // Compute ICMPv6 checksum
+    let checksum = icmpv6_checksum(source_ip, target_ip, icmp.packet());
+    icmp.set_checksum(checksum);
+
+    // IPv6 packet
+    let mut v6_buf = [0u8; 48]; // 40 header + 8 icmpv6
+    let mut v6 = MutableIpv6Packet::new(&mut v6_buf).ok_or_else(|| anyhow::anyhow!("Failed to build IPv6"))?;
+    v6.set_version(6);
+    v6.set_traffic_class(0);
+    v6.set_flow_label(0);
+    v6.set_payload_length(8);
+    v6.set_next_header(IpNextHeaderProtocols::Icmpv6);
+    v6.set_hop_limit(hop_limit);
+    v6.set_source(source_ip);
+    v6.set_destination(target_ip);
+    v6.set_payload(icmp.packet());
+
+    // Send
+    let _ = tx.send_to(v6.packet(), None);
+
+    // Wait for response
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        match rx.next() {
+            Ok(frame) => {
+                if let Some(eth) = EthernetPacket::new(frame) {
+                    if eth.get_ethertype() != EtherTypes::Ipv6 { continue; }
+                    if let Some(ipv6) = Ipv6Packet::new(eth.payload()) {
+                        if ipv6.get_destination() != source_ip { continue; }
+                        // Check for ICMPv6 Time Exceeded (type 3) or Echo Reply (type 129)
+                        let payload = ipv6.payload();
+                        if payload.len() >= 8 {
+                            let icmp_type = payload[0];
+                            // ICMPv6 Time Exceeded (3) - intermediate hop
+                            if icmp_type == 3 {
+                                return Ok(Some((ipv6.get_source(), start.elapsed())));
+                            }
+                            // ICMPv6 Echo Reply (129) - reached target
+                            if icmp_type == 129 {
+                                let reply_id = ((payload[4] as u16) << 8) | payload[5] as u16;
+                                let reply_seq = ((payload[6] as u16) << 8) | payload[7] as u16;
+                                if reply_id == icmp.get_identifier() && reply_seq == sequence_number {
+                                    return Ok(Some((target_ip, start.elapsed())));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(_) => break,
         }
     }
-    Ok(false)
+
+    Ok(None)
+}
+
+/// Compute ICMPv6 checksum
+fn icmpv6_checksum(source: std::net::Ipv6Addr, dest: std::net::Ipv6Addr, payload: &[u8]) -> u16 {
+    use std::net::Ipv6Addr;
+
+    let mut sum: u32 = 0;
+
+    // Add source address (16 bytes)
+    let source_bytes = source.octets();
+    for chunk in source_bytes.chunks(2) {
+        sum += (chunk[0] as u32) << 8 | chunk[1] as u32;
+    }
+
+    // Add destination address (16 bytes)
+    let dest_bytes = dest.octets();
+    for chunk in dest_bytes.chunks(2) {
+        sum += (chunk[0] as u32) << 8 | chunk[1] as u32;
+    }
+
+    // Add upper layer packet length
+    let length = payload.len() as u32;
+    sum += length;
+
+    // Add next header (ICMPv6 = 58)
+    sum += 58;
+
+    // Add ICMPv6 header and data
+    let mut i = 0;
+    while i + 1 < payload.len() {
+        sum += (payload[i] as u32) << 8 | payload[i + 1] as u32;
+        i += 2;
+    }
+    if i < payload.len() {
+        sum += (payload[i] as u32) << 8;
+    }
+
+    // Fold 32-bit sum to 16 bits
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+
+    !(sum as u16)
 }
 
 /// Send ICMPv6 echo to an IPv6 host using raw sockets
@@ -712,36 +862,6 @@ async fn icmpv6_ping_host(target_ip: std::net::Ipv6Addr, timeout: Duration) -> a
     Ok(false)
 }
 
-/// Calculate ICMPv6 checksum using IPv6 pseudo-header
-fn icmpv6_checksum(src: std::net::Ipv6Addr, dst: std::net::Ipv6Addr, payload: &[u8]) -> u16 {
-    let mut sum: u128 = 0;
-    // Source and destination addresses
-    for chunk in src.octets().chunks(2) {
-        sum += ((chunk[0] as u128) << 8) | (chunk[1] as u128);
-    }
-    for chunk in dst.octets().chunks(2) {
-        sum += ((chunk[0] as u128) << 8) | (chunk[1] as u128);
-    }
-    // Upper-layer packet length (32-bit)
-    let len = payload.len() as u32;
-    sum += ((len >> 16) as u128) + ((len & 0xFFFF) as u128);
-    // Next header (ICMPv6 = 58)
-    sum += 58;
-    // Payload
-    let mut i = 0;
-    while i + 1 < payload.len() {
-        sum += ((payload[i] as u128) << 8) | (payload[i + 1] as u128);
-        i += 2;
-    }
-    if i < payload.len() {
-        sum += (payload[i] as u128) << 8;
-    }
-    // Fold to 16 bits
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-    !(sum as u16)
-}
 
 /// Send ARP request for a target IP (synchronous)
 fn send_arp_request_sync(

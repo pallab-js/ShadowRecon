@@ -20,7 +20,8 @@ use crate::scripting::ScriptEngine;
 pub struct Scanner {
     pub config: Arc<ScanConfig>,
     timing: ScanTiming,
-    semaphore: Arc<Semaphore>,
+    port_scan_semaphore: Arc<Semaphore>,
+    service_scan_semaphore: Arc<Semaphore>,
     port_scanner: PortScanner,
     service_detector: ServiceDetector,
     os_fingerprinter: OsFingerprinter,
@@ -31,7 +32,8 @@ impl Scanner {
     /// Create a new scanner with the given configuration
     pub fn new(config: ScanConfig) -> Self {
         let timing = config.timing.to_timing();
-        let semaphore = Arc::new(Semaphore::new(config.threads));
+        let port_scan_semaphore = Arc::new(Semaphore::new(config.threads));
+        let service_scan_semaphore = Arc::new(Semaphore::new(config.threads * 2)); // Higher concurrency for service detection
         let port_scanner = PortScanner::new(&config, &timing);
         let service_detector = ServiceDetector::new(&config);
         let os_fingerprinter = OsFingerprinter::new(&config, &timing);
@@ -39,7 +41,8 @@ impl Scanner {
         Self {
             config: Arc::new(config),
             timing,
-            semaphore,
+            port_scan_semaphore,
+            service_scan_semaphore,
             port_scanner,
             service_detector,
             os_fingerprinter,
@@ -255,7 +258,7 @@ impl Scanner {
         let mut tasks = Vec::new();
 
         for host in hosts.into_iter() {
-            let semaphore = Arc::clone(&self.semaphore);
+            let semaphore = Arc::clone(&self.port_scan_semaphore);
             let ports = ports.to_vec();
             let port_scanner = self.port_scanner.clone();
             let timing = self.timing.clone();
@@ -293,13 +296,22 @@ impl Scanner {
     ) -> anyhow::Result<HostInfo> {
         let port_results = scan_ports(host.ip, &ports, &port_scanner, &timing).await?;
 
+        let protocol = match port_scanner.config.scan_type {
+            crate::types::ScanType::Udp => "udp",
+            _ => "tcp",
+        };
+
         host.ports = port_results.into_iter()
             .map(|(port, state)| PortInfo {
                 port,
-                protocol: "tcp".to_string(), // TODO: Support UDP
+                protocol: protocol.to_string(),
                 state,
                 service: None,
-                reason: "syn-ack".to_string(), // TODO: Proper reason
+                reason: match port_scanner.config.scan_type {
+                    crate::types::ScanType::Udp => "no-response",
+                    crate::types::ScanType::Connect => "connect",
+                    _ => "syn-ack",
+                }.to_string(),
                 ttl: None,
             })
             .collect();
@@ -318,7 +330,7 @@ impl Scanner {
         let mut tasks = Vec::new();
 
         for host in hosts.into_iter() {
-            let semaphore = Arc::clone(&self.semaphore);
+            let semaphore = Arc::clone(&self.service_scan_semaphore);
             let service_detector = self.service_detector.clone();
 
             let task = task::spawn(async move {
@@ -351,8 +363,20 @@ impl Scanner {
         service_detector: ServiceDetector,
     ) -> anyhow::Result<HostInfo> {
         for port_info in &mut host.ports {
-            if port_info.state == PortState::Open {
-                if let Some(service) = detect_services(host.ip, port_info.port, &service_detector).await? {
+            // For TCP, only check open ports
+            // For UDP, check all ports since UDP responses are unreliable
+            let should_check = if port_info.protocol == "udp" {
+                true // Always check UDP ports for services
+            } else {
+                port_info.state == PortState::Open
+            };
+
+            if should_check {
+                if let Some(service) = if port_info.protocol == "udp" {
+                    crate::service::detect_udp_service(host.ip, port_info.port, &service_detector).await?
+                } else {
+                    detect_services(host.ip, port_info.port, &service_detector).await?
+                } {
                     port_info.service = Some(service);
                 }
             }

@@ -36,7 +36,7 @@ async fn main() {
         }
     };
 
-    // Create discovery options based on config (avoid raw-socket defaults)
+    // Create discovery options based on config
     let discovery_options = crate::types::DiscoveryOptions {
         ping_sweep: false,
         arp_scan: false,
@@ -44,7 +44,7 @@ async fn main() {
         reverse_dns: config.resolve_hostname,
         os_detection: false,
         service_version: matches!(config.service_detection, crate::types::ServiceDetectionMode::Advanced | crate::types::ServiceDetectionMode::Full),
-        script_scan: false,
+        script_scan: !config.scripts.is_empty(),
         aggressive_timing: matches!(config.timing, crate::types::TimingTemplate::Aggressive | crate::types::TimingTemplate::Insane),
     };
 
