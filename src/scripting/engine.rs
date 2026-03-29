@@ -5,6 +5,7 @@ use tokio::sync::Semaphore;
 use tracing::{debug, info};
 
 use crate::types::{HostInfo, ScanConfig, ScanTiming, ScriptResult};
+use crate::scripting::lua_engine::LuaScriptEngine;
 
 /// Scripting engine for custom vulnerability checks and extensions
 pub struct ScriptEngine {
@@ -12,6 +13,42 @@ pub struct ScriptEngine {
     timing: ScanTiming,
     semaphore: Arc<Semaphore>,
     scripts: HashMap<String, Box<dyn Script>>,
+    lua_engine: Arc<LuaScriptEngine>,
+}
+
+#[derive(Clone)]
+struct LuaScript {
+    id: String,
+    path: std::path::PathBuf,
+    lua_engine: Arc<LuaScriptEngine>,
+}
+
+#[async_trait::async_trait]
+impl Script for LuaScript {
+    fn metadata(&self) -> ScriptMetadata {
+        ScriptMetadata {
+            id: self.id.clone(),
+            name: self.id.clone(),
+            description: format!("Lua script: {}", self.id),
+            script_type: ScriptType::Service,
+            target_ports: vec![],
+            target_services: vec![],
+        }
+    }
+
+    async fn execute(&self, target: &ScriptTarget, _timing: &ScanTiming) -> anyhow::Result<Vec<ScriptResult>> {
+        let (host, port_info) = match target {
+            ScriptTarget::Service(host, idx) => (host, Some(&host.ports[*idx])),
+            ScriptTarget::Port(host, idx) => (host, Some(&host.ports[*idx])),
+            ScriptTarget::Host(host) => (host, None),
+        };
+        
+        self.lua_engine.run_script(&self.id, &self.path, host, port_info).await
+    }
+
+    fn clone_box(&self) -> Box<dyn Script> {
+        Box::new(self.clone())
+    }
 }
 
 /// Script trait for implementing vulnerability checks
@@ -22,6 +59,25 @@ pub trait Script: Send + Sync {
 
     /// Execute the script against a target
     async fn execute(&self, target: &ScriptTarget, timing: &ScanTiming) -> anyhow::Result<Vec<ScriptResult>>;
+
+    /// Clone the script into a Box
+    fn clone_box(&self) -> Box<dyn Script>;
+}
+
+impl Clone for ScriptEngine {
+    fn clone(&self) -> Self {
+        let mut scripts = HashMap::new();
+        for (id, script) in &self.scripts {
+            scripts.insert(id.clone(), script.clone_box());
+        }
+        Self {
+            config: Arc::clone(&self.config),
+            timing: self.timing.clone(),
+            semaphore: Arc::clone(&self.semaphore),
+            scripts,
+            lua_engine: Arc::clone(&self.lua_engine),
+        }
+    }
 }
 
 /// Script metadata
@@ -57,16 +113,40 @@ impl ScriptEngine {
     /// Create a new script engine
     pub fn new(config: &ScanConfig, timing: &ScanTiming) -> Self {
         let semaphore = Arc::new(Semaphore::new(config.threads.min(5))); // Limit script concurrency
+        let lua_engine = Arc::new(LuaScriptEngine::new().unwrap());
+        
         let mut engine = Self {
             config: Arc::new(config.clone()),
             timing: timing.clone(),
             semaphore,
             scripts: HashMap::new(),
+            lua_engine,
         };
 
         engine.load_builtin_scripts();
+        engine.load_lua_scripts();
 
         engine
+    }
+
+    fn load_lua_scripts(&mut self) {
+        let scripts_dir = std::path::Path::new("scripts");
+        if scripts_dir.exists() && scripts_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(scripts_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("lua") {
+                        let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
+                        let lua_script = LuaScript {
+                            id: id.clone(),
+                            path,
+                            lua_engine: Arc::clone(&self.lua_engine),
+                        };
+                        self.add_script(Box::new(lua_script));
+                    }
+                }
+            }
+        }
     }
 
     /// Add a custom script

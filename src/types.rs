@@ -26,6 +26,10 @@ pub enum ScanType {
     Window,
     /// Maimon scan
     Maimon,
+    /// SCTP INIT scan
+    SctpInit,
+    /// SCTP COOKIE-ECHO scan
+    SctpCookieEcho,
 }
 
 /// Service detection modes
@@ -67,6 +71,8 @@ pub enum PortState {
     Closed,
     /// Port is filtered (firewall)
     Filtered,
+    /// Port is unfiltered (ACK received)
+    Unfiltered,
     /// Port state is unknown
     Unknown,
 }
@@ -79,6 +85,18 @@ pub struct OsInfo {
     pub family: Option<String>,
     pub accuracy: u8, // 0-100
     pub fingerprint: String,
+}
+
+impl Default for OsInfo {
+    fn default() -> Self {
+        Self {
+            name: "Unknown".to_string(),
+            version: None,
+            family: None,
+            accuracy: 0,
+            fingerprint: String::new(),
+        }
+    }
 }
 
 /// Service information
@@ -114,6 +132,22 @@ pub struct HostInfo {
     pub traceroute: Option<Vec<TracerouteHop>>, // Traceroute hops
     pub uptime: Option<Duration>,
     pub status: HostStatus,
+}
+
+impl Default for HostInfo {
+    fn default() -> Self {
+        Self {
+            ip: IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            hostname: None,
+            mac: None,
+            os: None,
+            ports: Vec::new(),
+            distance: None,
+            traceroute: None,
+            uptime: None,
+            status: HostStatus::Unknown,
+        }
+    }
 }
 
 /// Traceroute hop information
@@ -166,7 +200,7 @@ pub struct ScanConfig {
     pub timing: TimingTemplate,
     pub service_detection: ServiceDetectionMode,
     pub output_format: OutputFormat,
-    pub output_file: Option<String>,
+    pub output_files: Vec<(OutputFormat, String)>,
     pub threads: usize,
     pub timeout: Duration,
     pub delay: Option<Duration>,
@@ -176,6 +210,12 @@ pub struct ScanConfig {
     pub source_port: Option<u16>,
     pub interface: Option<String>,
     pub fragment_packets: bool,
+    pub mtu: Option<usize>,
+    pub data_length: Option<usize>,
+    pub min_rate: Option<f64>,
+    pub max_rate: Option<f64>,
+    pub min_parallelism: Option<usize>,
+    pub max_parallelism: Option<usize>,
     pub randomize_hosts: bool,
     pub randomize_ports: bool,
     pub verbose: bool,
@@ -295,10 +335,13 @@ impl TimingTemplate {
 /// Scan timing parameters
 #[derive(Debug, Clone)]
 pub struct ScanTiming {
+    #[allow(dead_code)]
     pub initial_rtt_timeout: Duration,
+    #[allow(dead_code)]
     pub min_rtt_timeout: Duration,
     pub max_rtt_timeout: Duration,
     pub max_retries: u32,
+    #[allow(dead_code)]
     pub host_timeout: Duration,
     // Future: configurable delays between scans
     #[allow(dead_code)]
@@ -308,10 +351,11 @@ pub struct ScanTiming {
 }
 
 /// Network discovery options
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DiscoveryOptions {
     pub ping_sweep: bool,
     pub arp_scan: bool,
+    #[allow(dead_code)]
     pub traceroute: bool,
     // Future: reverse DNS for all discovered hosts
     #[allow(dead_code)]

@@ -1,87 +1,49 @@
--- Example Lua script for custom vulnerability scanning
--- This script demonstrates how to create custom checks for RustScan
+-- ShadowRecon Example Lua Script
+-- Matches the new Lua 5.4 High-Performance Engine
 
-script_metadata = {
-    id = "example-vuln-check",
-    name = "Example Vulnerability Check",
-    description = "An example script that demonstrates custom vulnerability detection",
-    type = "service", -- "port", "host", or "service"
-    target_ports = {80, 443, 8080, 8443}, -- ports this script applies to
-    target_services = {"http", "https"}, -- services this script applies to
-}
+-- The script environment provides:
+-- host: { ip = "...", hostname = "..." }
+-- port: { number = 80, protocol = "tcp" } (if applicable)
+-- shadow: { tcp_connect(ip, port), http_get(url) }
 
--- Helper function to make HTTP requests
-function make_http_request(ip, port, path)
-    -- In a real implementation, this would make actual HTTP requests
-    -- For this example, we'll simulate a response
-    return {
-        status = 200,
-        headers = {
-            ["server"] = "Example-Server/1.0",
-            ["x-powered-by"] = "Example-Framework"
-        },
-        body = "<html><body>Example website</body></html>"
-    }
-end
-
--- The execute function is called for each applicable target
-function execute()
-    local results = {}
-
-    if target.type == "service" then
-        print("Running custom vulnerability check on " .. target.ip .. ":" .. target.port)
-
-        -- Simulate an HTTP request to check for vulnerabilities
-        local response = make_http_request(target.ip, target.port, "/")
-
-        -- Example vulnerability checks
-        local vulnerabilities = {}
-
-        -- Check for outdated server software
-        if response.headers["server"] and string.find(response.headers["server"], "Example%-Server/1%.0") then
-            table.insert(vulnerabilities, {
-                id = "EXAMPLE-OUTDATED-SERVER",
-                title = "Outdated Server Software",
-                description = "The server is running outdated software that may have known vulnerabilities",
-                severity = "medium",
-                cve = nil,
-                cvss_score = 6.5,
-                references = {"https://example.com/security-advisory"}
-            })
+local function check_vulnerability()
+    local ip = host.ip
+    local port_num = port.number
+    
+    -- Example: Simple HTTP banner check
+    if port_num == 80 or port_num == 443 then
+        local protocol = (port_num == 443) and "https" or "http"
+        local url = string.format("%s://%s:%d/", protocol, ip, port_num)
+        
+        local status, body = shadow.http_get(url)
+        
+        if status == 200 then
+            if string.find(body, "admin") then
+                return {
+                    output = "Found potential admin panel in body",
+                    vulnerability = "POTENTIAL-ADMIN-PANEL"
+                }
+            end
         end
-
-        -- Check for information disclosure
-        if response.headers["x-powered-by"] then
-            table.insert(vulnerabilities, {
-                id = "EXAMPLE-INFO-DISCLOSURE",
-                title = "Information Disclosure",
-                description = "Server is leaking technology information via X-Powered-By header",
-                severity = "low",
-                cve = nil,
-                cvss_score = 2.5,
-                references = {"https://owasp.org/www-project-top-ten/"}
-            })
+    end
+    
+    -- Example: TCP raw probe
+    local sock = shadow.tcp_connect(ip, port_num)
+    if sock then
+        sock:send("HEAD / HTTP/1.0\r\n\r\n")
+        local response = sock:receive(1024)
+        sock:close()
+        
+        if string.find(response, "Server:") then
+            return {
+                output = "Server header found via raw socket",
+                banner = response
+            }
         end
-
-        -- Prepare the result
-        local output
-        if #vulnerabilities > 0 then
-            output = string.format("Found %d vulnerabilities on %s:%d", #vulnerabilities, target.ip, target.port)
-        else
-            output = string.format("No vulnerabilities found on %s:%d", target.ip, target.port)
-        end
-
-        results[1] = {
-            script_id = "example-vuln-check",
-            output = output,
-            elements = {
-                checked_url = string.format("http://%s:%d/", target.ip, target.port),
-                response_status = response.status,
-                server_header = response.headers["server"] or "unknown"
-            },
-            vulnerabilities = #vulnerabilities > 0 and vulnerabilities or nil
-        }
     end
 
-    return results
+    return "No specific vulnerability found"
 end
+
+-- Return the result
+return check_vulnerability()

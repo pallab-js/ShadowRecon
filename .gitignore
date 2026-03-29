@@ -25,3 +25,15 @@ Desktop.ini
 # Temporary files
 *.tmp
 *.temp
+
+# Scan outputs
+*.nmap
+*.xml
+*.gnmap
+*.json
+*.csv
+*.html
+
+# Nmap data files (if downloaded locally)
+nmap-service-probes
+nmap-os-db

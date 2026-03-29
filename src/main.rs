@@ -11,6 +11,7 @@ mod scanning;
 mod scripting;
 mod service;
 mod types;
+mod v2;
 
 use cli::parse_args;
 use crate::core::scanner::Scanner;
@@ -18,16 +19,7 @@ use output::create_formatter;
 
 #[tokio::main]
 async fn main() {
-    // Initialize tracing
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "shadowrecon=info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
-
-    // Parse command line arguments
+    // Parse command line arguments first to get logging levels
     let config = match parse_args() {
         Ok(config) => config,
         Err(e) => {
@@ -35,6 +27,29 @@ async fn main() {
             process::exit(1);
         }
     };
+
+    // Initialize tracing based on verbosity
+    let log_level = if config.debug {
+        "shadowrecon=debug"
+    } else if config.verbose {
+        "shadowrecon=info"
+    } else {
+        "shadowrecon=warn"
+    };
+
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| log_level.into()),
+        )
+        .with(tracing_subscriber::fmt::layer()
+            .with_target(false)
+            .with_thread_ids(false)
+            .with_file(false)
+            .with_line_number(false)
+            .compact()
+        )
+        .init();
 
     // Create discovery options based on config
     let discovery_options = crate::types::DiscoveryOptions {
@@ -77,24 +92,18 @@ async fn main() {
                 tracing::error!("Failed to format console output: {}", e);
             }
 
-            // If output file is specified, write to file
-            if let Some(output_file) = &scanner.config.output_file {
-                let rendered = match output::format_to_string(&result, scanner.config.output_format) {
+            // If output files are specified, write to them
+            for (format, output_file) in &scanner.config.output_files {
+                let rendered = match output::format_to_string(&result, *format) {
                     Ok(s) => s,
                     Err(e) => {
-                        tracing::warn!("Falling back to JSON for file output due to format error: {}", e);
-                        match output::format_to_string(&result, crate::types::OutputFormat::Json) {
-                            Ok(s) => s,
-                            Err(e2) => {
-                                tracing::error!("Failed to render output for file: {}", e2);
-                                String::new()
-                            }
-                        }
+                        tracing::error!("Failed to render output for file {} in format {:?}: {}", output_file, format, e);
+                        continue;
                     }
                 };
                 match std::fs::write(output_file, rendered) {
                     Ok(_) => tracing::info!("Results written to {}", output_file),
-                    Err(e) => tracing::error!("Failed to write output file: {}", e),
+                    Err(e) => tracing::error!("Failed to write output file {}: {}", output_file, e),
                 }
             }
         }

@@ -43,6 +43,7 @@ impl PortScanner {
             ScanType::Ack => self.tcp_ack_scan(target, port).await,
             ScanType::Window => self.tcp_window_scan(target, port).await,
             ScanType::Maimon => self.tcp_maimon_scan(target, port).await,
+            ScanType::SctpInit | ScanType::SctpCookieEcho => Err(anyhow::anyhow!("SCTP scanning not supported in legacy engine")),
         }
     }
 }
@@ -921,7 +922,7 @@ pub fn calculate_tcp_checksum(
 }
 
 /// Calculate TCP checksum for IPv6
-fn calculate_tcp_checksum_ipv6(
+pub fn calculate_tcp_checksum_ipv6(
     tcp_packet: &pnet::packet::tcp::TcpPacket,
     source_ip: std::net::Ipv6Addr,
     dest_ip: std::net::Ipv6Addr,

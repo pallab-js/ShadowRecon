@@ -7,11 +7,16 @@ use regex::Regex;
 
 use crate::types::{ScanConfig, ServiceDetectionMode, ServiceInfo};
 
+pub mod nmap_parser;
+
+use nmap_parser::{NmapServiceProbeFile};
+
 /// Service detector for identifying running services and versions
 #[derive(Clone)]
 pub struct ServiceDetector {
     config: std::sync::Arc<ScanConfig>,
     service_signatures: HashMap<u16, Vec<ServiceSignature>>,
+    nmap_probes: Option<std::sync::Arc<NmapServiceProbeFile>>,
 }
 
 #[derive(Clone)]
@@ -28,7 +33,18 @@ impl ServiceDetector {
         let mut detector = Self {
             config: std::sync::Arc::new(config.clone()),
             service_signatures: HashMap::new(),
+            nmap_probes: None,
         };
+        
+        // Try to load nmap service probes
+        if let Ok(probes) = NmapServiceProbeFile::load_from_file("/usr/share/nmap/nmap-service-probes") {
+            detector.nmap_probes = Some(std::sync::Arc::new(probes));
+            tracing::info!("Loaded nmap-service-probes from /usr/share/nmap/");
+        } else if let Ok(probes) = NmapServiceProbeFile::load_from_file("./nmap-service-probes") {
+            detector.nmap_probes = Some(std::sync::Arc::new(probes));
+            tracing::info!("Loaded nmap-service-probes from current directory");
+        }
+
         detector.load_service_signatures();
         detector
     }
@@ -88,12 +104,42 @@ pub async fn detect_services(
     }
 }
 
-/// Basic service detection - simple banner grabbing
+/// Basic service detection - simple banner grabbing and nmap probes
 async fn detect_service_basic(
     target: IpAddr,
     port: u16,
     detector: &ServiceDetector,
 ) -> anyhow::Result<Option<ServiceInfo>> {
+    // 1. Try Nmap probes if available
+    if let Some(nmap_probes) = &detector.nmap_probes {
+        for probe in &nmap_probes.probes {
+            // Only use probes that target this port or are generic
+            if !probe.ports.is_empty() && !probe.ports.contains(&port) {
+                continue;
+            }
+
+            if probe.protocol == "TCP" {
+                if let Ok(response) = send_probe(target, port, &probe.probe_string, Duration::from_secs(5)).await {
+                    if !response.is_empty() {
+                        // Try to match against probe's matches
+                        for m in &probe.matches {
+                            if m.pattern.is_match_at(&String::from_utf8_lossy(&response), 0) {
+                                return Ok(Some(ServiceInfo {
+                                    name: m.service.clone(),
+                                    version: None, // Need to implement version extraction from m.version_info
+                                    product: None,
+                                    cpe: None, // Need to implement CPE extraction
+                                    script_results: HashMap::new(),
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Fallback to legacy banner grabbing
     let banner = grab_banner(target, port, Duration::from_secs(5)).await?;
 
     if let Some(banner) = banner {
@@ -165,9 +211,6 @@ async fn detect_service_advanced(
 }
 
 /// Full service detection with extensive fingerprinting
-/// NOTE: Script-based detection is performed at the host level by the script engine,
-/// not at the individual service detection level. This function focuses on extended
-/// service fingerprinting beyond basic and advanced modes.
 async fn detect_service_full(
     target: IpAddr,
     port: u16,
@@ -180,23 +223,49 @@ async fn detect_service_full(
         // Additional deep probing based on service type
         match info.name.as_str() {
             "http" | "https" => {
-                // Extended HTTP header analysis
-                // In a full implementation, would check for additional headers,
-                // framework detection, CMS identification, etc.
                 tracing::debug!("Full HTTP fingerprinting complete for {}:{}", target, port);
             }
             "ssh" => {
-                // Extended SSH fingerprinting
-                // Would analyze SSH version strings, key exchange methods, etc.
                 tracing::debug!("Full SSH fingerprinting complete for {}:{}", target, port);
             }
-            _ => {
-                // For other services, advanced detection is sufficient
-            }
+            _ => {}
         }
     }
 
     Ok(service_info)
+}
+
+/// Send a specific probe string and read response
+async fn send_probe(
+    target: IpAddr,
+    port: u16,
+    probe: &[u8],
+    timeout_duration: Duration,
+) -> anyhow::Result<Vec<u8>> {
+    let addr = (target, port);
+    let probe_vec = probe.to_vec();
+    
+    match tokio::time::timeout(timeout_duration, tokio::task::spawn_blocking(move || {
+        let mut stream = TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(addr),
+            Duration::from_secs(3)
+        )?;
+
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+
+        stream.write_all(&probe_vec)?;
+
+        let mut buffer = [0; 4096];
+        match stream.read(&mut buffer) {
+            Ok(n) if n > 0 => Ok(buffer[..n].to_vec()),
+            _ => Ok(Vec::new()),
+        }
+    })).await {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(e)) => Err(e.into()),
+        Err(_) => Ok(Vec::new()),
+    }
 }
 
 /// Grab service banner by connecting and reading initial response
@@ -282,13 +351,11 @@ async fn probe_http_service(
     // Parse Server header
     if let Some(server) = resp.headers().get("server").and_then(|v| v.to_str().ok()) {
         info.product = Some(server.to_string());
-        // Crude version extraction like "Apache/2.4.49"
         if let Some((_, v)) = server.split_once('/') {
             if !v.is_empty() {
                 info.version = Some(v.to_string());
             }
         }
-        // Map to basic CPEs
         if server.to_lowercase().contains("apache") {
             info.cpe = Some("cpe:/a:apache:http_server".to_string());
         } else if server.to_lowercase().contains("nginx") {
@@ -303,11 +370,10 @@ async fn probe_http_service(
 
 /// UDP service detection with payload-based fingerprinting
 pub async fn detect_udp_service(
-    target: IpAddr,
+    target: std::net::IpAddr,
     port: u16,
-    detector: &ServiceDetector,
+    _detector: &ServiceDetector,
 ) -> anyhow::Result<Option<ServiceInfo>> {
-    // First try port-based detection for known services
     let basic_info = match port {
         53 => Some(("dns".to_string(), "DNS Server".to_string(), Some("cpe:/a:isc:bind".to_string()))),
         67 | 68 => Some(("dhcp".to_string(), "DHCP Server".to_string(), None)),
@@ -324,9 +390,7 @@ pub async fn detect_udp_service(
         _ => None,
     };
 
-    // Try payload-based detection for better accuracy
     if let Some((service_name, product, cpe)) = basic_info {
-        // Send specific probes to confirm service
         match probe_udp_service(target, port, &service_name).await {
             Ok(Some(detailed_info)) => Ok(Some(detailed_info)),
             _ => Ok(Some(ServiceInfo {
@@ -338,7 +402,6 @@ pub async fn detect_udp_service(
             })),
         }
     } else {
-        // Try generic UDP probe for unknown ports
         match probe_udp_service(target, port, "unknown").await {
             Ok(Some(info)) => Ok(Some(info)),
             _ => Ok(Some(ServiceInfo {
@@ -352,7 +415,6 @@ pub async fn detect_udp_service(
     }
 }
 
-/// Probe UDP service with specific payloads
 async fn probe_udp_service(target: IpAddr, port: u16, service_hint: &str) -> anyhow::Result<Option<ServiceInfo>> {
     use std::net::UdpSocket;
     use tokio::time::{timeout, Duration};
@@ -362,33 +424,16 @@ async fn probe_udp_service(target: IpAddr, port: u16, service_hint: &str) -> any
     socket.connect((target, port))?;
 
     let probe_payload: &[u8] = match service_hint {
-        "dns" => {
-            // DNS query for version.bind TXT record
-            b"\x00\x01\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03"
-        },
-        "snmp" => {
-            // SNMP GET request for sysDescr
-            b"\x30\x26\x02\x01\x00\x04\x06public\xa0\x19\x02\x04\x00\x00\x00\x00\x02\x01\x00\x02\x01\x00\x30\x0b\x30\x09\x06\x05\x2b\x06\x01\x02\x01\x01\x01\x05\x00"
-        },
-        "ntp" => {
-            // NTP version request
-            b"\x1b\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
-        },
-        "tftp" => {
-            // TFTP read request
-            b"\x00\x01test.txt\x00octet\x00"
-        },
-        "netbios-ns" => {
-            // NetBIOS name query
-            b"\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x20\x43\x4b\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x00\x00\x21\x00\x01"
-        },
-        _ => {
-            // Generic probe
-            b"probe"
-        },
+        "dns" => b"\x00\x01\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07version\x04bind\x00\x00\x10\x00\x03",
+        "snmp" => b"\x30\x26\x02\x01\x00\x04\x06public\xa0\x19\x02\x04\x00\x00\x00\x00\x02\x01\x00\x02\x01\x00\x30\x0b\x30\x09\x06\x05\x2b\x06\x01\x02\x01\x01\x01\x05\x00",
+        "ntp" => b"\x1b\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+        "tftp" => b"\x00\x01test.txt\x00octet\x00",
+        "netbios-ns" => b"\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x20\x43\x4b\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x00\x00\x21\x00\x01",
+        "dhcp" => b"\x01\x01\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x63\x82\x53\x63\x35\x01\x01\xff",
+        "upnp" => b"M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 3\r\nST: ssdp:all\r\n\r\n",
+        _ => b"\x00\x00\x00\x00\x00\x00\x00\x00", // Generic probe
     };
 
-    // Send probe
     socket.send(probe_payload)?;
 
     let mut buffer = [0u8; 1024];
@@ -396,12 +441,10 @@ async fn probe_udp_service(target: IpAddr, port: u16, service_hint: &str) -> any
         socket.recv(&mut buffer)
     })).await {
         Ok(Ok(Ok(n))) if n > 0 => {
-            // Analyze response based on service type
             let response = &buffer[..n];
             match service_hint {
                 "dns" => {
                     if response.len() > 12 && response[0] == 0 && response[1] == 1 {
-                        // DNS response
                         Ok(Some(ServiceInfo {
                             name: "dns".to_string(),
                             version: extract_dns_version(response),
@@ -409,13 +452,10 @@ async fn probe_udp_service(target: IpAddr, port: u16, service_hint: &str) -> any
                             cpe: Some("cpe:/a:isc:bind".to_string()),
                             script_results: HashMap::new(),
                         }))
-                    } else {
-                        Ok(None)
-                    }
+                    } else { Ok(None) }
                 },
                 "snmp" => {
                     if response.len() > 10 && response[0] == 0x30 {
-                        // SNMP response
                         Ok(Some(ServiceInfo {
                             name: "snmp".to_string(),
                             version: extract_snmp_version(response),
@@ -423,13 +463,10 @@ async fn probe_udp_service(target: IpAddr, port: u16, service_hint: &str) -> any
                             cpe: Some("cpe:/a:net-snmp:net-snmp".to_string()),
                             script_results: HashMap::new(),
                         }))
-                    } else {
-                        Ok(None)
-                    }
+                    } else { Ok(None) }
                 },
                 "ntp" => {
                     if response.len() >= 48 && response[0] == 0x1c {
-                        // NTP response
                         Ok(Some(ServiceInfo {
                             name: "ntp".to_string(),
                             version: extract_ntp_version(response),
@@ -437,13 +474,10 @@ async fn probe_udp_service(target: IpAddr, port: u16, service_hint: &str) -> any
                             cpe: Some("cpe:/a:ntp:ntp".to_string()),
                             script_results: HashMap::new(),
                         }))
-                    } else {
-                        Ok(None)
-                    }
+                    } else { Ok(None) }
                 },
                 "tftp" => {
                     if response.len() >= 4 && response[0] == 0 && response[1] == 3 {
-                        // TFTP data packet
                         Ok(Some(ServiceInfo {
                             name: "tftp".to_string(),
                             version: None,
@@ -451,12 +485,32 @@ async fn probe_udp_service(target: IpAddr, port: u16, service_hint: &str) -> any
                             cpe: Some("cpe:/a:tftp:tftp".to_string()),
                             script_results: HashMap::new(),
                         }))
-                    } else {
-                        Ok(None)
-                    }
+                    } else { Ok(None) }
+                },
+                "dhcp" => {
+                    if response.len() >= 240 && response[0] == 0x02 {
+                        Ok(Some(ServiceInfo {
+                            name: "dhcp".to_string(),
+                            version: None,
+                            product: Some("DHCP Server".to_string()),
+                            cpe: None,
+                            script_results: HashMap::new(),
+                        }))
+                    } else { Ok(None) }
+                },
+                "upnp" => {
+                    let resp_str = String::from_utf8_lossy(response);
+                    if resp_str.contains("HTTP/1.1 200 OK") || resp_str.contains("NOTIFY") {
+                        Ok(Some(ServiceInfo {
+                            name: "upnp".to_string(),
+                            version: None,
+                            product: Some("UPnP Device".to_string()),
+                            cpe: None,
+                            script_results: HashMap::new(),
+                        }))
+                    } else { Ok(None) }
                 },
                 _ => {
-                    // Generic response - service is likely running
                     Ok(Some(ServiceInfo {
                         name: service_hint.to_string(),
                         version: None,
@@ -471,25 +525,13 @@ async fn probe_udp_service(target: IpAddr, port: u16, service_hint: &str) -> any
     }
 }
 
-/// Extract DNS version from response
 fn extract_dns_version(response: &[u8]) -> Option<String> {
-    // Parse DNS response for version.bind TXT record
-    if response.len() < 20 {
-        return None;
-    }
-
-    // Look for TXT record in answer section
-    let mut offset = 12; // Skip header
+    if response.len() < 20 { return None; }
+    let mut offset = 12;
     while offset < response.len() - 12 {
-        // Skip question section
-        if response[offset] & 0xC0 == 0xC0 {
-            offset += 2;
-        } else {
-            offset += (response[offset] as usize) + 1;
-        }
-        offset += 10; // Skip QTYPE, QCLASS
-
-        // Check answer section
+        if response[offset] & 0xC0 == 0xC0 { offset += 2; }
+        else { offset += (response[offset] as usize) + 1; }
+        offset += 10;
         if offset + 12 < response.len() {
             let rdlength = ((response[offset + 10] as usize) << 8) | response[offset + 11] as usize;
             if offset + 12 + rdlength <= response.len() {
@@ -504,38 +546,22 @@ fn extract_dns_version(response: &[u8]) -> Option<String> {
     None
 }
 
-/// Extract SNMP version from response
 fn extract_snmp_version(response: &[u8]) -> Option<String> {
-    // Basic SNMP version extraction
-    if response.len() > 20 && response[0] == 0x30 {
-        // Look for sysDescr OID response
-        Some("SNMP v2c".to_string())
-    } else {
-        None
-    }
+    if response.len() > 20 && response[0] == 0x30 { Some("SNMP v2c".to_string()) }
+    else { None }
 }
 
-/// Extract NTP version from response
 fn extract_ntp_version(response: &[u8]) -> Option<String> {
     if response.len() >= 48 {
         let stratum = response[1];
-        if stratum > 0 {
-            Some(format!("NTP Stratum {}", stratum))
-        } else {
-            Some("NTP Server".to_string())
-        }
-    } else {
-        None
-    }
+        if stratum > 0 { Some(format!("NTP Stratum {}", stratum)) }
+        else { Some("NTP Server".to_string()) }
+    } else { None }
 }
 
-/// Check if a service is vulnerable based on version
 #[allow(dead_code)]
 pub fn check_service_vulnerabilities(service: &ServiceInfo) -> Vec<crate::types::Vulnerability> {
     let mut vulnerabilities = Vec::new();
-
-    // Simple vulnerability checks - in a real implementation, this would
-    // consult a vulnerability database
     if let Some(version) = service.version.as_ref() {
         match service.name.as_str() {
             "apache" | "httpd" => {
@@ -567,6 +593,5 @@ pub fn check_service_vulnerabilities(service: &ServiceInfo) -> Vec<crate::types:
             _ => {}
         }
     }
-
     vulnerabilities
 }

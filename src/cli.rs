@@ -20,7 +20,7 @@ pub fn parse_args() -> Result<ScanConfig, Box<dyn std::error::Error>> {
         timing: parse_timing(&matches),
         service_detection: parse_service_detection(&matches),
         output_format: parse_output_format(&matches),
-        output_file: matches.get_one::<String>("output").cloned(),
+        output_files: parse_output_files(&matches),
         threads: matches
             .get_one::<String>("threads")
             .and_then(|s| s.parse().ok())
@@ -48,6 +48,12 @@ pub fn parse_args() -> Result<ScanConfig, Box<dyn std::error::Error>> {
             .and_then(|s| s.parse().ok()),
         interface: matches.get_one::<String>("interface").cloned(),
         fragment_packets: matches.get_flag("fragment"),
+        mtu: matches.get_one::<String>("mtu").and_then(|s| s.parse().ok()),
+        data_length: matches.get_one::<String>("data-length").and_then(|s| s.parse().ok()),
+        min_rate: matches.get_one::<String>("min-rate").and_then(|s| s.parse().ok()),
+        max_rate: matches.get_one::<String>("max-rate").and_then(|s| s.parse().ok()),
+        min_parallelism: matches.get_one::<String>("min-parallelism").and_then(|s| s.parse().ok()),
+        max_parallelism: matches.get_one::<String>("max-parallelism").and_then(|s| s.parse().ok()),
         randomize_hosts: matches.get_flag("randomize-hosts"),
         randomize_ports: matches.get_flag("randomize-ports"),
         verbose: matches.get_flag("verbose"),
@@ -88,11 +94,17 @@ fn create_app() -> Command {
                 .num_args(1)
         )
         .arg(
+            Arg::new("top-ports")
+                .long("top-ports")
+                .help("Scan <number> most common ports")
+                .num_args(1)
+        )
+        .arg(
             Arg::new("scan-type")
                 .short('s')
                 .long("scan-type")
                 .help("Scan type")
-                .value_parser(["S", "T", "U", "F", "N", "X", "A", "W", "M"])
+                .value_parser(["S", "T", "U", "F", "N", "X", "A", "W", "M", "Y", "Z"])
                 .default_value("T")
                 .num_args(1)
         )
@@ -121,10 +133,34 @@ fn create_app() -> Command {
                 .num_args(1)
         )
         .arg(
+            Arg::new("output-normal")
+                .short('N')
+                .help("Output in normal format to the given filename")
+                .num_args(1)
+        )
+        .arg(
+            Arg::new("output-xml")
+                .short('X')
+                .help("Output in XML format to the given filename")
+                .num_args(1)
+        )
+        .arg(
+            Arg::new("output-grep")
+                .short('G')
+                .help("Output in grepable format to the given filename")
+                .num_args(1)
+        )
+        .arg(
+            Arg::new("output-all")
+                .long("output-all")
+                .help("Output in normal, XML, and grepable formats at once")
+                .num_args(1)
+        )
+        .arg(
             Arg::new("output-format")
                 .short('O')
                 .long("output-format")
-                .help("Output format")
+                .help("Output format for -o")
                 .value_parser(["text", "json", "xml", "csv", "html", "grep"])
                 .default_value("text")
                 .num_args(1)
@@ -190,6 +226,42 @@ fn create_app() -> Command {
                 .long("fragment")
                 .help("Fragment packets")
                 .action(clap::ArgAction::SetTrue)
+        )
+        .arg(
+            Arg::new("mtu")
+                .long("mtu")
+                .help("Set specific MTU for fragmentation (must be multiple of 8)")
+                .num_args(1)
+        )
+        .arg(
+            Arg::new("data-length")
+                .long("data-length")
+                .help("Append random data to sent packets")
+                .num_args(1)
+        )
+        .arg(
+            Arg::new("min-rate")
+                .long("min-rate")
+                .help("Send packets no slower than <number> per second")
+                .num_args(1)
+        )
+        .arg(
+            Arg::new("max-rate")
+                .long("max-rate")
+                .help("Send packets no faster than <number> per second")
+                .num_args(1)
+        )
+        .arg(
+            Arg::new("min-parallelism")
+                .long("min-parallelism")
+                .help("Minimum number of parallel probes")
+                .num_args(1)
+        )
+        .arg(
+            Arg::new("max-parallelism")
+                .long("max-parallelism")
+                .help("Maximum number of parallel probes")
+                .num_args(1)
         )
         .arg(
             Arg::new("randomize-hosts")
@@ -325,6 +397,13 @@ fn parse_targets(matches: &ArgMatches) -> Result<Vec<String>, Box<dyn std::error
 
 /// Parse port specifications
 fn parse_ports(matches: &ArgMatches) -> Result<PortRange, Box<dyn std::error::Error>> {
+    // Priority 1: --top-ports
+    if let Some(top_n) = matches.get_one::<String>("top-ports") {
+        if let Ok(n) = top_n.parse::<u16>() {
+            return Ok(PortRange::Top(n));
+        }
+    }
+
     let port_str = matches.get_one::<String>("ports").unwrap();
 
     // Check for special cases
@@ -375,6 +454,8 @@ fn parse_scan_type(matches: &ArgMatches) -> ScanType {
         "A" => ScanType::Ack,
         "W" => ScanType::Window,
         "M" => ScanType::Maimon,
+        "Y" => ScanType::SctpInit,
+        "Z" => ScanType::SctpCookieEcho,
         _ => ScanType::Connect, // Default
     }
 }
@@ -421,6 +502,35 @@ fn parse_output_format(matches: &ArgMatches) -> OutputFormat {
     }
 }
 
+/// Parse multiple output files
+fn parse_output_files(matches: &ArgMatches) -> Vec<(OutputFormat, String)> {
+    let mut files = Vec::new();
+
+    if let Some(file) = matches.get_one::<String>("output") {
+        files.push((parse_output_format(matches), file.clone()));
+    }
+
+    if let Some(file) = matches.get_one::<String>("output-normal") {
+        files.push((OutputFormat::Text, file.clone()));
+    }
+
+    if let Some(file) = matches.get_one::<String>("output-xml") {
+        files.push((OutputFormat::Xml, file.clone()));
+    }
+
+    if let Some(file) = matches.get_one::<String>("output-grep") {
+        files.push((OutputFormat::Grep, file.clone()));
+    }
+
+    if let Some(base) = matches.get_one::<String>("output-all") {
+        files.push((OutputFormat::Text, format!("{}.nmap", base)));
+        files.push((OutputFormat::Xml, format!("{}.xml", base)));
+        files.push((OutputFormat::Grep, format!("{}.gnmap", base)));
+    }
+
+    files
+}
+
 /// Parse decoy IPs
 fn parse_decoy_ips(matches: &ArgMatches) -> Result<Vec<IpAddr>, Box<dyn std::error::Error>> {
     let decoys = matches.get_one::<String>("decoy");
@@ -437,7 +547,8 @@ fn parse_decoy_ips(matches: &ArgMatches) -> Result<Vec<IpAddr>, Box<dyn std::err
     }
 }
 
-/// Create discovery options from command line arguments
+/// Create discovery options from command line matches
+#[allow(dead_code)]
 pub fn create_discovery_options(matches: &ArgMatches) -> DiscoveryOptions {
     let aggressive = matches.get_flag("aggressive");
 

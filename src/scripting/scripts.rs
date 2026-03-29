@@ -79,6 +79,10 @@ impl Script for HeartbleedScript {
             }]),
         }
     }
+
+    fn clone_box(&self) -> Box<dyn Script> {
+        Box::new(HeartbleedScript)
+    }
 }
 
 impl HeartbleedScript {
@@ -165,6 +169,10 @@ impl Script for SmbVulnScript {
                 vulnerabilities: None,
             }]),
         }
+    }
+
+    fn clone_box(&self) -> Box<dyn Script> {
+        Box::new(SmbVulnScript)
     }
 }
 
@@ -274,6 +282,10 @@ impl Script for HttpVulnScript {
             }]),
         }
     }
+
+    fn clone_box(&self) -> Box<dyn Script> {
+        Box::new(HttpVulnScript)
+    }
 }
 
 impl HttpVulnScript {
@@ -373,6 +385,10 @@ macro_rules! placeholder_script {
                     vulnerabilities: None,
                 }])
             }
+
+            fn clone_box(&self) -> Box<dyn Script> {
+                Box::new($name)
+            }
         }
     };
 }
@@ -446,6 +462,10 @@ impl Script for FtpAnonScript {
                 vulnerabilities: None,
             }]),
         }
+    }
+
+    fn clone_box(&self) -> Box<dyn Script> {
+        Box::new(FtpAnonScript)
     }
 }
 
@@ -555,6 +575,10 @@ impl Script for SshWeakScript {
                 vulnerabilities: None,
             }]),
         }
+    }
+
+    fn clone_box(&self) -> Box<dyn Script> {
+        Box::new(SshWeakScript)
     }
 }
 
@@ -690,6 +714,10 @@ impl Script for DnsAmplificationScript {
             }]),
         }
     }
+
+    fn clone_box(&self) -> Box<dyn Script> {
+        Box::new(DnsAmplificationScript)
+    }
 }
 
 impl DnsAmplificationScript {
@@ -782,6 +810,10 @@ impl Script for NtpMonlistScript {
                 vulnerabilities: None,
             }]),
         }
+    }
+
+    fn clone_box(&self) -> Box<dyn Script> {
+        Box::new(NtpMonlistScript)
     }
 }
 
@@ -883,6 +915,10 @@ impl Script for RedisUnauthScript {
                 vulnerabilities: None,
             }]),
         }
+    }
+
+    fn clone_box(&self) -> Box<dyn Script> {
+        Box::new(RedisUnauthScript)
     }
 }
 

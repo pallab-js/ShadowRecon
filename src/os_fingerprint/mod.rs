@@ -8,28 +8,46 @@ use tracing::{debug, info};
 
 use crate::types::{HostInfo, OsInfo, ScanConfig, ScanTiming};
 
+pub mod nmap_parser;
+
+use nmap_parser::NmapOsDb;
+
 /// OS fingerprinting engine
 /// 
 /// NOTE: OS fingerprinting is currently experimental and returns heuristic-based results.
 /// Full OS fingerprinting requires detailed TCP/IP header analysis via raw sockets
 /// and extensive fingerprint databases. Current implementation provides basic OS
 /// detection based on TCP response characteristics.
+#[derive(Clone)]
 pub struct OsFingerprinter {
     #[allow(dead_code)]
     config: Arc<ScanConfig>,
     timing: ScanTiming,
     semaphore: Arc<Semaphore>,
+    nmap_db: Option<std::sync::Arc<NmapOsDb>>,
 }
 
 impl OsFingerprinter {
     /// Create a new OS fingerprinter
     pub fn new(config: &ScanConfig, timing: &ScanTiming) -> Self {
         let semaphore = Arc::new(Semaphore::new(config.threads.min(10))); // Limit OS fingerprinting concurrency
-        Self {
+        let mut fingerprinter = Self {
             config: Arc::new(config.clone()),
             timing: timing.clone(),
             semaphore,
+            nmap_db: None,
+        };
+
+        // Try to load nmap OS database
+        if let Ok(db) = NmapOsDb::load_from_file("/usr/share/nmap/nmap-os-db") {
+            fingerprinter.nmap_db = Some(std::sync::Arc::new(db));
+            tracing::info!("Loaded nmap-os-db from /usr/share/nmap/");
+        } else if let Ok(db) = NmapOsDb::load_from_file("./nmap-os-db") {
+            fingerprinter.nmap_db = Some(std::sync::Arc::new(db));
+            tracing::info!("Loaded nmap-os-db from current directory");
         }
+
+        fingerprinter
     }
 
     /// Perform OS fingerprinting on hosts
@@ -39,10 +57,11 @@ impl OsFingerprinter {
         for host in hosts {
             let semaphore = Arc::clone(&self.semaphore);
             let timing = self.timing.clone();
+            let nmap_db = self.nmap_db.clone();
 
             let task = task::spawn(async move {
                 match semaphore.acquire().await {
-                    Ok(_permit) => Self::fingerprint_host(host, timing).await,
+                    Ok(_permit) => Self::fingerprint_host(host, timing, nmap_db).await,
                     Err(e) => {
                         debug!("Semaphore acquire failed for OS fingerprinting: {}", e);
                         Err(anyhow::anyhow!("OS fingerprinting skipped due to semaphore error"))
@@ -68,7 +87,7 @@ impl OsFingerprinter {
     }
 
     /// Fingerprint a single host
-    async fn fingerprint_host(mut host: HostInfo, timing: ScanTiming) -> anyhow::Result<HostInfo> {
+    async fn fingerprint_host(mut host: HostInfo, timing: ScanTiming, nmap_db: Option<std::sync::Arc<NmapOsDb>>) -> anyhow::Result<HostInfo> {
         info!("Fingerprinting OS for host: {}", host.ip);
 
         // Perform multiple fingerprinting tests
@@ -77,7 +96,7 @@ impl OsFingerprinter {
         let udp_tests = perform_udp_fingerprinting(host.ip, &timing).await?;
 
         // Analyze results
-        let os_info = analyze_fingerprint_results(&tcp_tests, &icmp_tests, &udp_tests)?;
+        let os_info = analyze_fingerprint_results(&tcp_tests, &icmp_tests, &udp_tests, nmap_db.as_deref())?;
 
         host.os = Some(os_info);
         Ok(host)
@@ -196,16 +215,39 @@ fn analyze_fingerprint_results(
     tcp: &TcpFingerprint,
     icmp: &IcmpFingerprint,
     _udp: &UdpFingerprint,
+    nmap_db: Option<&NmapOsDb>,
 ) -> anyhow::Result<OsInfo> {
     let mut os_candidates = Vec::new();
 
-    // Get fingerprint database
-    let db = get_os_fingerprints();
+    // 1. Try Nmap OS DB if available
+    if let Some(db) = nmap_db {
+        for fp in &db.fingerprints {
+            let mut score = 0;
+            let mut total_tests = 0;
+
+            // Simple heuristic matching for Nmap DB
+            if let Some(t1) = fp.tests.get("T1") {
+                total_tests += 1;
+                if let Some(w) = t1.get("W") {
+                    if w == &tcp.syn_test.window_size.to_string() {
+                        score += 10;
+                    }
+                }
+            }
+
+            if total_tests > 0 && score > 5 {
+                os_candidates.push((fp.name.as_str(), "Nmap Match", score * 10 / total_tests));
+            }
+        }
+    }
+
+    // 2. Fallback to legacy database
+    let db_legacy = get_os_fingerprints();
 
     // Analyze TCP SYN response characteristics
     if tcp.syn_test.flags & 0x12 != 0 { // SYN+ACK
         // Check against known fingerprints
-        for (os_name, fingerprint) in &db {
+        for (os_name, fingerprint) in &db_legacy {
             let mut score = 0;
 
             // Window size match
@@ -345,7 +387,7 @@ async fn send_tcp_syn_probe(target: IpAddr, timing: &ScanTiming) -> anyhow::Resu
             match timeout(timing.max_rtt_timeout, tokio::net::TcpStream::connect(addr)).await {
                 Ok(Ok(stream)) => {
                     // Connection succeeded - try to get peer address info
-                    if let Ok(peer_addr) = stream.peer_addr() {
+                    if let Ok(_peer_addr) = stream.peer_addr() {
                         // We can't get detailed TCP options from the stream API
                         // Return reasonable defaults based on successful connection
                         Ok(TcpResponse {

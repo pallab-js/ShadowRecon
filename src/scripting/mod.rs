@@ -2,5 +2,6 @@
 
 pub mod engine;
 pub mod scripts;
+pub mod lua_engine;
 
 pub use engine::*;

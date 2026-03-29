@@ -21,7 +21,7 @@ socket2 = "0.5"
 dns-lookup = "2.0"
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -32,6 +32,7 @@ ipnetwork = "0.20"
 
 # UI
 colored = "2.1"
+indicatif = "0.17"
 
 # Time and IDs
 chrono = { version = "0.4", features = ["serde"] }
@@ -56,5 +57,7 @@ rand = "0.8"
 
 # Regex for pattern matching
 regex = "1.10"
+
+mlua = { version = "0.9", features = ["lua54", "vendored", "async"] }
 
 async-trait = "0.1.89"
